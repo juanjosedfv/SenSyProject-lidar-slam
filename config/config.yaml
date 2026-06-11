@@ -1,0 +1,43 @@
+project:
+  name: lidar_positioning
+
+data:
+  dataset_name: rosbag_outdoor
+  rosbag_dir: data/rosbag
+  rosbag_db: data/rosbag/rosbag_0.db3
+  rosbag_metadata: data/rosbag/metadata.yaml
+  pointcloud_topic: /ouster/points
+  pointcloud_dir: data/rosbag/rosbag_data/laz_clouds
+  pointcloud_glob: "*.laz"
+  # Start small while tuning ICP. Set max_scans to null for the full 6008-scan run.
+  max_scans: 120
+  scan_stride: 5
+  # Skip the first seconds because the project slides warn about GNSS jumps at
+  # the beginning/end of the corrected file. Override from CLI while tuning.
+  start_index: 300
+  gnss_csv: data/xtrack_gnss_corrected/xtrack_global_position_t12.csv
+  imu_csv: null
+
+preprocessing:
+  voxel_size_m: 0.35
+  min_range_m: 1.0
+  max_range_m: 80.0
+  remove_ground: false
+  ground_z_threshold_m: -1.5
+
+odometry:
+  icp_max_correspondence_distance_m: 1.5
+  icp_max_iterations: 50
+  icp_tolerance_m: 0.0001
+  use_scan_to_map: false
+  map_voxel_size_m: 0.5
+  keyframe_translation_m: 1.0
+  keyframe_rotation_deg: 10.0
+
+output:
+  output_dir: outputs
+  trajectory_csv: outputs/trajectory_estimate.csv
+  velocity_csv: outputs/velocity_ned.csv
+  map_pcd: outputs/map.pcd
+  metrics_json: outputs/metrics.json
+  plot_dir: outputs/plots
