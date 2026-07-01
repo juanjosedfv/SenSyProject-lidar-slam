@@ -9,11 +9,8 @@ data:
   pointcloud_topic: /ouster/points
   pointcloud_dir: data/rosbag/rosbag_data/laz_clouds
   pointcloud_glob: "*.laz"
-  # Start small while tuning ICP. Set max_scans to null for the full 6008-scan run.
   max_scans: 120
   scan_stride: 5
-  # Skip the first seconds because the project slides warn about GNSS jumps at
-  # the beginning/end of the corrected file. Override from CLI while tuning.
   start_index: 300
   gnss_csv: data/xtrack_gnss_corrected/xtrack_global_position_t12.csv
   imu_csv: null
@@ -26,10 +23,12 @@ preprocessing:
   ground_z_threshold_m: -1.5
 
 odometry:
-  icp_max_correspondence_distance_m: 1.5
+  icp_max_correspondence_distance_m: 0.6
   icp_max_iterations: 50
   icp_tolerance_m: 0.0001
-  use_scan_to_map: false
+  use_scan_to_map: true
+  use_motion_model: true
+  icp_max_correction_m: 2.0
   map_voxel_size_m: 0.5
   keyframe_translation_m: 1.0
   keyframe_rotation_deg: 10.0

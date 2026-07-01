@@ -85,7 +85,13 @@ def align_2d_rigid(estimated_xy, reference_xy):
     ref_zero = ref - ref_center
 
     cov = est_zero.T @ ref_zero
-    u, _, vt = np.linalg.svd(cov)
+    try:
+        u, _, vt = np.linalg.svd(cov)
+    except np.linalg.LinAlgError:
+        rotation = np.eye(2, dtype="float64")
+        translation = ref_center - est_center
+        aligned = est + translation
+        return aligned, rotation, float(translation)
     rotation = vt.T @ u.T
     if np.linalg.det(rotation) < 0:
         vt[-1, :] *= -1

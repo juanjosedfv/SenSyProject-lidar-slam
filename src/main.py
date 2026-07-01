@@ -188,16 +188,42 @@ def main() -> None:
         if index == 1 or index % 25 == 0 or index == len(selected_files):
             print(f"Loaded/preprocessed {index}/{len(selected_files)} scans")
 
-    trajectory, accumulated_map = run_icp_odometry(scans, cfg["odometry"])
+    scan_timestamps = [s[0] for s in scans]
+    gnss_raw = None
+    gnss_enu = None
+    reference = None
+    gnss_initial_poses = None
+    if dataset.gnss_csv and Path(dataset.gnss_csv).exists():
+        gnss_raw = load_gnss_ground_truth(dataset.gnss_csv)
+        origin = origin_from_gnss(gnss_raw)
+        gnss_enu = gnss_to_enu(gnss_raw, origin)
+        reference = interpolate_ground_truth(gnss_enu, scan_timestamps)
+        valid_mask = reference["valid"].astype(bool, copy=False)
+        if valid_mask.all():
+            gnss_initial_poses = [
+                {"east_m": reference["east_m"][i], "north_m": reference["north_m"][i], "up_m": reference["up_m"][i]}
+                for i in range(len(scans))
+            ]
+            print("Seeding ICP with GNSS initial poses")
+        else:
+            print(f"Warning: only {valid_mask.sum()}/{len(scans)} GNSS matches, not using as seed")
+
+    trajectory, accumulated_map = run_icp_odometry(
+        scans, cfg["odometry"], initial_poses=gnss_initial_poses,
+    )
     write_ascii_pcd(cfg["output"]["map_pcd"], accumulated_map)
 
     import numpy as np
 
     xyz = trajectory_xyz(trajectory)
-    gnss_raw = load_gnss_ground_truth(dataset.gnss_csv)
-    origin = origin_from_gnss(gnss_raw)
-    gnss = gnss_to_enu(gnss_raw, origin)
-    reference = interpolate_ground_truth(gnss, [step.timestamp_s for step in trajectory])
+
+    if gnss_raw is None:
+        gnss_raw = load_gnss_ground_truth(dataset.gnss_csv)
+        origin = origin_from_gnss(gnss_raw)
+        gnss = gnss_to_enu(gnss_raw, origin)
+        reference = interpolate_ground_truth(gnss, [step.timestamp_s for step in trajectory])
+    else:
+        gnss = gnss_enu
     valid = reference["valid"].astype(bool, copy=False)
     if valid.sum() < 2:
         raise RuntimeError("Estimated scan timestamps do not overlap with GNSS ground truth")
@@ -225,6 +251,9 @@ def main() -> None:
         cfg["output"]["plot_dir"],
     )
 
+    finite_icp_rmse = [
+        step.inlier_rmse for step in trajectory if np.isfinite(step.inlier_rmse)
+    ]
     metrics = {
         "num_scans": len(trajectory),
         "num_gnss_matches": int(valid.sum()),
@@ -234,7 +263,9 @@ def main() -> None:
         "gnss_path_m": gnss_path_m,
         "raw_lidar_to_gnss_path_ratio": path_length_ratio,
         "mean_icp_fitness": sum(step.fitness for step in trajectory) / len(trajectory),
-        "mean_icp_inlier_rmse_m": sum(step.inlier_rmse for step in trajectory) / len(trajectory),
+        "mean_icp_inlier_rmse_m": (
+            float(np.mean(finite_icp_rmse)) if finite_icp_rmse else None
+        ),
     }
 
     diagnostic_series = {
