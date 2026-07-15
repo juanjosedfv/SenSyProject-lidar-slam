@@ -1,10 +1,9 @@
 from __future__ import annotations
-
 import argparse
 import csv
 import json
 from pathlib import Path
-
+import numpy as np
 import yaml
 
 if __package__ in {None, ""}:
@@ -36,8 +35,6 @@ def load_config(path: str | Path) -> dict:
 
 
 def _write_trajectory_outputs(trajectory, xyz, aligned_xy, origin, cfg):
-    import numpy as np
-
     timestamps = np.array([step.timestamp_s for step in trajectory], dtype="float64")
     up = xyz[:, 2]
     lat, lon, alt = enu_to_latlon(aligned_xy[:, 0], aligned_xy[:, 1], up, origin)
@@ -56,6 +53,7 @@ def _write_trajectory_outputs(trajectory, xyz, aligned_xy, origin, cfg):
         "alt": alt,
         "icp_fitness": [step.fitness for step in trajectory],
         "icp_inlier_rmse": [step.inlier_rmse for step in trajectory],
+        "icp_degenerate": [step.degenerate for step in trajectory],
     }
 
     trajectory_columns = list(est.keys())
@@ -78,8 +76,6 @@ def _write_trajectory_outputs(trajectory, xyz, aligned_xy, origin, cfg):
 
 
 def _path_length_xy(xy):
-    import numpy as np
-
     if len(xy) < 2:
         return 0.0
     deltas = np.diff(xy[:, :2], axis=0)
@@ -87,8 +83,6 @@ def _path_length_xy(xy):
 
 
 def _latlon_to_relative_xy(lat, lon):
-    import numpy as np
-
     radius_m = 6_378_137.0
     lat0_rad = np.radians(lat[0])
     east = np.radians(lon - lon[0]) * radius_m * np.cos(lat0_rad)
@@ -97,8 +91,6 @@ def _latlon_to_relative_xy(lat, lon):
 
 
 def _load_plotjuggler_raw_gps_xy(path: Path, timestamps):
-    import numpy as np
-
     lat_col = "/fmu/out/vehicle_gps_position/latitude_deg"
     lon_col = "/fmu/out/vehicle_gps_position/longitude_deg"
     rows = []
@@ -119,8 +111,6 @@ def _load_plotjuggler_raw_gps_xy(path: Path, timestamps):
 
 
 def _load_fmu_local_xy(path: Path, timestamps):
-    import numpy as np
-
     x_col = "/fmu/out/vehicle_local_position_v1/x"
     y_col = "/fmu/out/vehicle_local_position_v1/y"
     rows = []
@@ -193,35 +183,44 @@ def main() -> None:
     gnss_enu = None
     reference = None
     gnss_initial_poses = None
+    use_gnss_seed = bool(cfg["odometry"].get("use_gnss_seed", False))
+    gnss_time_offset_s = float(cfg["data"].get("gnss_time_offset_s", 0.0))
     if dataset.gnss_csv and Path(dataset.gnss_csv).exists():
         gnss_raw = load_gnss_ground_truth(dataset.gnss_csv)
         origin = origin_from_gnss(gnss_raw)
         gnss_enu = gnss_to_enu(gnss_raw, origin)
-        reference = interpolate_ground_truth(gnss_enu, scan_timestamps)
+        reference = interpolate_ground_truth(
+            gnss_enu,
+            scan_timestamps,
+            time_offset_s=gnss_time_offset_s,
+        )
         valid_mask = reference["valid"].astype(bool, copy=False)
-        if valid_mask.all():
+        if use_gnss_seed and valid_mask.all():
             gnss_initial_poses = [
                 {"east_m": reference["east_m"][i], "north_m": reference["north_m"][i], "up_m": reference["up_m"][i]}
                 for i in range(len(scans))
             ]
             print("Seeding ICP with GNSS initial poses")
-        else:
+        elif use_gnss_seed:
             print(f"Warning: only {valid_mask.sum()}/{len(scans)} GNSS matches, not using as seed")
+        else:
+            print("GNSS is evaluation-only; running LiDAR odometry independently")
 
     trajectory, accumulated_map = run_icp_odometry(
         scans, cfg["odometry"], initial_poses=gnss_initial_poses,
     )
     write_ascii_pcd(cfg["output"]["map_pcd"], accumulated_map)
-
-    import numpy as np
-
     xyz = trajectory_xyz(trajectory)
 
     if gnss_raw is None:
         gnss_raw = load_gnss_ground_truth(dataset.gnss_csv)
         origin = origin_from_gnss(gnss_raw)
         gnss = gnss_to_enu(gnss_raw, origin)
-        reference = interpolate_ground_truth(gnss, [step.timestamp_s for step in trajectory])
+        reference = interpolate_ground_truth(
+            gnss,
+            [step.timestamp_s for step in trajectory],
+            time_offset_s=gnss_time_offset_s,
+        )
     else:
         gnss = gnss_enu
     valid = reference["valid"].astype(bool, copy=False)
@@ -231,6 +230,12 @@ def main() -> None:
     reference_xy = np.column_stack((reference["east_m"], reference["north_m"]))
     raw_lidar_path_m = _path_length_xy(xyz[:, :2])
     gnss_path_m = _path_length_xy(reference_xy[valid])
+    raw_lidar_displacement_m = float(
+        np.linalg.norm(xyz[valid, :2][-1] - xyz[valid, :2][0])
+    )
+    gnss_displacement_m = float(
+        np.linalg.norm(reference_xy[valid][-1] - reference_xy[valid][0])
+    )
     aligned_valid, rotation, translation = align_2d_rigid(
         xyz[valid, :2],
         reference_xy[valid],
@@ -239,6 +244,11 @@ def main() -> None:
     aligned_lidar_path_m = _path_length_xy(aligned_xy[valid])
     rmse_m = compute_rmse(aligned_valid - reference_xy[valid])
     path_length_ratio = raw_lidar_path_m / gnss_path_m if gnss_path_m > 0 else None
+    displacement_ratio = (
+        raw_lidar_displacement_m / gnss_displacement_m
+        if gnss_displacement_m > 0
+        else None
+    )
 
     est = _write_trajectory_outputs(trajectory, xyz, aligned_xy, origin, cfg)
     save_evaluation_plots(
@@ -257,15 +267,21 @@ def main() -> None:
     metrics = {
         "num_scans": len(trajectory),
         "num_gnss_matches": int(valid.sum()),
+        "gnss_used_for_odometry": gnss_initial_poses is not None,
+        "gnss_time_offset_s": gnss_time_offset_s,
         "horizontal_rmse_m": rmse_m,
         "raw_lidar_path_m": raw_lidar_path_m,
         "aligned_lidar_path_m": aligned_lidar_path_m,
         "gnss_path_m": gnss_path_m,
         "raw_lidar_to_gnss_path_ratio": path_length_ratio,
+        "raw_lidar_displacement_m": raw_lidar_displacement_m,
+        "gnss_displacement_m": gnss_displacement_m,
+        "raw_lidar_to_gnss_displacement_ratio": displacement_ratio,
         "mean_icp_fitness": sum(step.fitness for step in trajectory) / len(trajectory),
         "mean_icp_inlier_rmse_m": (
             float(np.mean(finite_icp_rmse)) if finite_icp_rmse else None
         ),
+        "num_degenerate_icp_frames": sum(1 for step in trajectory if step.degenerate),
     }
 
     diagnostic_series = {
@@ -298,10 +314,15 @@ def main() -> None:
     print(f"Horizontal RMSE vs corrected GNSS: {rmse_m:.2f} m")
     print(f"Raw LIDAR path length: {raw_lidar_path_m:.2f} m")
     print(f"Corrected GNSS path length: {gnss_path_m:.2f} m")
-    if path_length_ratio is not None and path_length_ratio < 0.5:
+    if displacement_ratio is not None and not 0.5 <= displacement_ratio <= 2.0:
         print(
-            "Warning: LIDAR odometry path is much shorter than GNSS. "
-            "The baseline ICP is likely stuck near identity for this segment."
+            "Warning: LiDAR and GNSS endpoint displacement disagree strongly. "
+            "Verify timestamps, sensor frames, and ICP convergence."
+        )
+    if metrics["num_degenerate_icp_frames"]:
+        print(
+            f"Warning: {metrics['num_degenerate_icp_frames']}/{len(trajectory)} scans had "
+            "degenerate ICP matches (see icp_degenerate column in the trajectory CSV)."
         )
 
 

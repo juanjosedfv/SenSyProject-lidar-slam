@@ -1,1 +1,1 @@
-"""LIDAR-based positioning package."""
+"""LIDAR-based positioning package"""

@@ -1,9 +1,8 @@
-"""Small-area geodetic coordinate conversion helpers."""
-
 from __future__ import annotations
-
 from dataclasses import dataclass
 import math
+import numpy as np
+
 
 
 EARTH_RADIUS_M = 6_378_137.0
@@ -21,10 +20,6 @@ class GeoOrigin:
 
 
 def latlon_to_enu(lat_deg, lon_deg, alt_m, origin: GeoOrigin):
-    """Convert WGS84 latitude/longitude near ``origin`` to local ENU meters."""
-
-    import numpy as np
-
     lat = np.asarray(lat_deg, dtype="float64")
     lon = np.asarray(lon_deg, dtype="float64")
     alt = np.asarray(alt_m, dtype="float64")
@@ -35,10 +30,6 @@ def latlon_to_enu(lat_deg, lon_deg, alt_m, origin: GeoOrigin):
 
 
 def enu_to_latlon(east_m, north_m, up_m, origin: GeoOrigin):
-    """Convert local ENU meters near ``origin`` back to WGS84 lat/lon."""
-
-    import numpy as np
-
     east = np.asarray(east_m, dtype="float64")
     north = np.asarray(north_m, dtype="float64")
     up = np.asarray(up_m, dtype="float64")
@@ -49,6 +40,4 @@ def enu_to_latlon(east_m, north_m, up_m, origin: GeoOrigin):
 
 
 def enu_to_ned(east_m, north_m, up_m):
-    """Return NED components from ENU components."""
-
     return north_m, east_m, -up_m

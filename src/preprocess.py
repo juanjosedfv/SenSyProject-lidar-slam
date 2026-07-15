@@ -1,6 +1,6 @@
-"""Point cloud preprocessing utilities."""
-
 from __future__ import annotations
+import numpy as np
+
 
 
 def filter_points(
@@ -11,10 +11,6 @@ def filter_points(
     remove_ground: bool = False,
     ground_z_threshold_m: float = -1.5,
 ):
-    """Remove invalid, too-near, too-far, and optional ground points."""
-
-    import numpy as np
-
     if points.size == 0:
         return points
 
@@ -27,10 +23,6 @@ def filter_points(
 
 
 def voxel_downsample(points, voxel_size_m: float = 0.25):
-    """Downsample points by replacing each occupied voxel with its centroid."""
-
-    import numpy as np
-
     if points.size == 0 or voxel_size_m <= 0:
         return points
 
@@ -44,8 +36,6 @@ def voxel_downsample(points, voxel_size_m: float = 0.25):
 
 
 def preprocess_scan(points, cfg: dict):
-    """Apply configured filtering and voxel downsampling."""
-
     filtered = filter_points(
         points,
         min_range_m=float(cfg.get("min_range_m", 1.0)),

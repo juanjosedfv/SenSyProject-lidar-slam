@@ -1,7 +1,4 @@
-"""Dataset path resolution for the provided ROS bag and corrected GNSS files."""
-
 from __future__ import annotations
-
 from dataclasses import dataclass
 from pathlib import Path
 import sqlite3
@@ -19,8 +16,6 @@ class DatasetPaths:
 
 
 def resolve_dataset_paths(cfg: dict) -> DatasetPaths:
-    """Resolve and validate the project data paths from ``config.yaml``."""
-
     data_cfg = cfg["data"]
     rosbag_dir = Path(data_cfg.get("rosbag_dir", "data/rosbag"))
     rosbag_db = Path(data_cfg.get("rosbag_db", rosbag_dir / "rosbag_0.db3"))
@@ -59,8 +54,6 @@ def resolve_dataset_paths(cfg: dict) -> DatasetPaths:
 
 
 def rosbag_topic_message_count(rosbag_db: Path, topic_name: str) -> int | None:
-    """Return the stored message count for a topic in a ROS 2 sqlite bag."""
-
     with sqlite3.connect(rosbag_db) as conn:
         row = conn.execute(
             """

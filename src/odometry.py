@@ -1,9 +1,9 @@
-"""ICP odometry utilities."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
 import numpy as np
+
+_CKD_TREE = None
 
 
 @dataclass(frozen=True)
@@ -13,27 +13,39 @@ class OdometryStep:
     transform: "object"
     fitness: float
     inlier_rmse: float
+    degenerate: bool = False
 
 
 def identity_transform():
     return np.eye(4, dtype="float64")
 
 
+def orthonormalize_rotation(transform):
+    transform = np.array(transform, dtype="float64", copy=True)
+    u, _, vt = np.linalg.svd(transform[:3, :3])
+    rotation = u @ vt
+    if np.linalg.det(rotation) < 0:
+        u[:, -1] *= -1
+        rotation = u @ vt
+    transform[:3, :3] = rotation
+    return transform
+
+
 def invert_rigid_transform(transform):
     inv = np.eye(4, dtype="float64")
-    rotation = np.asarray(transform, dtype="float64")[:3, :3]
+    transform = orthonormalize_rotation(transform)
+    rotation = transform[:3, :3]
     inv[:3, :3] = rotation.T
     inv[:3, 3] = -rotation.T @ transform[:3, 3]
     return inv
 
 
 def register_icp(source, target, initial_transform, cfg: dict):
-    """Register ``source`` into ``target`` with point-to-point ICP."""
-
     max_distance = float(cfg.get("icp_max_correspondence_distance_m", 1.5))
     max_iterations = int(cfg.get("icp_max_iterations", 50))
     tolerance = float(cfg.get("icp_tolerance_m", 1e-4))
     max_correction_m = float(cfg.get("icp_max_correction_m", 0.0))
+    degenerate_rmse_m = float(cfg.get("icp_degenerate_rmse_m", 1e-6))
 
     transform = np.array(initial_transform, dtype="float64", copy=True)
     initial_translation = transform[:3, 3].copy()
@@ -67,19 +79,20 @@ def register_icp(source, target, initial_transform, cfg: dict):
         "transformation": transform,
         "fitness": fitness,
         "inlier_rmse": inlier_rmse,
+        "degenerate": inlier_rmse < degenerate_rmse_m,
     }
 
 
 def nearest_neighbors(source, target):
-    """Return nearest target distances and indices for each source point."""
-
-    try:
-        from scipy.spatial import cKDTree
-    except ImportError as exc:
-        raise RuntimeError(
-            "ICP nearest-neighbor search requires SciPy. "
-            "Run: pip install -r requirements.txt"
-        ) from exc
+    global _CKD_TREE
+    if _CKD_TREE is None:
+        try:
+            from scipy.spatial import cKDTree
+        except ImportError as exc:
+            raise RuntimeError(
+                "Run: pip install -r requirements.txt"
+            ) from exc
+        _CKD_TREE = cKDTree
 
     target = np.asarray(target, dtype="float64")
     t_mask = np.isfinite(target).all(axis=1)
@@ -90,14 +103,12 @@ def nearest_neighbors(source, target):
     if not s_mask.all():
         source = np.where(s_mask[:, None], source, 1e6)
 
-    tree = cKDTree(target)
+    tree = _CKD_TREE(target)
     dist, idx = tree.query(source, k=1)
     return dist, idx
 
 
 def transform_points(points, transform):
-    """Apply a homogeneous transform to an ``Nx3`` point array."""
-
     points = np.asarray(points, dtype="float64")
     finite = np.isfinite(points).all(axis=1)
     if not finite.all():
@@ -107,8 +118,6 @@ def transform_points(points, transform):
 
 
 def best_fit_transform(source, target):
-    """Return rigid transform mapping ``source`` points onto ``target`` points."""
-
     source_centroid = source.mean(axis=0)
     target_centroid = target.mean(axis=0)
     source_zero = source - source_centroid
@@ -127,8 +136,6 @@ def best_fit_transform(source, target):
 
 
 def transform_cloud(cloud, transform):
-    """Return transformed points."""
-
     return transform_points(cloud, transform)
 
 
@@ -172,6 +179,15 @@ def run_icp_odometry(
     use_scan_to_map = bool(cfg.get("use_scan_to_map", False))
     use_motion_model = bool(cfg.get("use_motion_model", True))
     map_voxel_size = float(cfg.get("map_voxel_size_m", 0.35))
+    progress_interval = max(1, int(cfg.get("progress_interval", 25)))
+
+    print("Initializing ICP nearest-neighbor backend")
+    nearest_neighbors(
+        np.zeros((1, 3), dtype="float64"),
+        np.zeros((1, 3), dtype="float64"),
+    )
+    print("Running ICP odometry")
+
     gnss_transforms = None
     if initial_poses is not None:
         if len(initial_poses) != len(scans):
@@ -202,6 +218,7 @@ def run_icp_odometry(
     previous_cloud = scans[0][2]
     previous_transform = trajectory[0].transform
     previous_relative = identity_transform()
+    degenerate_frames = 0
 
     for i, (timestamp_s, source_file, current_cloud) in enumerate(scans[1:], start=1):
         if gnss_transforms is not None:
@@ -242,7 +259,25 @@ def run_icp_odometry(
             current_transform = previous_transform @ current_to_previous
             current_relative = current_to_previous
 
-        previous_relative = np.asarray(current_relative, dtype="float64")
+        is_degenerate = bool(result.get("degenerate", False)) or not np.isfinite(
+            result["inlier_rmse"]
+        )
+        if is_degenerate:
+            degenerate_frames += 1
+            current_relative = previous_relative
+            current_transform = (
+                current_relative @ previous_transform
+                if use_scan_to_map
+                else previous_transform @ current_relative
+            )
+            print(
+                f"  Warning: degenerate/failed ICP match at scan {i + 1}/{len(scans)} "
+                f"(inlier_rmse={result['inlier_rmse']:.2e}, fitness={result['fitness']:.3f}); "
+                "holding previous motion estimate instead of trusting it"
+            )
+
+        current_transform = orthonormalize_rotation(current_transform)
+        previous_relative = orthonormalize_rotation(np.asarray(current_relative, dtype="float64"))
 
         trajectory.append(
             OdometryStep(
@@ -251,6 +286,7 @@ def run_icp_odometry(
                 transform=current_transform,
                 fitness=float(result["fitness"]),
                 inlier_rmse=float(result["inlier_rmse"]),
+                degenerate=is_degenerate,
             )
         )
 
@@ -263,10 +299,22 @@ def run_icp_odometry(
         previous_cloud = current_cloud
         previous_transform = current_transform
 
+        completed = i + 1
+        if completed == 2 or completed % progress_interval == 0 or completed == len(scans):
+            print(
+                f"ICP odometry {completed}/{len(scans)} scans "
+                f"(fitness={result['fitness']:.3f}, "
+                f"RMSE={result['inlier_rmse']:.3f} m)"
+            )
+
+    if degenerate_frames:
+        print(
+            f"ICP flagged {degenerate_frames}/{len(scans) - 1} scans as degenerate "
+            "matches (held previous motion estimate instead of trusting them)"
+        )
+
     return trajectory, accumulated_map
 
 
 def trajectory_xyz(trajectory: list[OdometryStep]):
-    """Extract translation columns from a trajectory as ``Nx3``."""
-
     return np.array([step.transform[:3, 3] for step in trajectory], dtype="float64")
