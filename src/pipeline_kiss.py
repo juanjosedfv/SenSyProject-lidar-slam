@@ -183,10 +183,11 @@ def main() -> None:
     parser.add_argument(
         "--level",
         action="store_true",
-        help=(
-            "Gravity-align the odometry frame by fitting a plane through the "
-            "trajectory. KISS-ICP has no IMU, so a tilted sensor mount tilts the "
-            "whole frame and shrinks the horizontal projection by cos(tilt)."
+                help=(
+            "Compensate the LiDAR mount rotation by fitting a plane through the "
+            "trajectory. KISS-ICP has no absolute attitude reference, so a tilted "
+            "sensor mount tilts the whole frame and shrinks the horizontal "
+            "projection by cos(tilt). Measured at 10.0 deg here; see README."
         ),
     )
     parser.add_argument(

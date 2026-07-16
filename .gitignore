@@ -7,3 +7,5 @@ report/.DS_Store
 src/__pycache__/*.cpython-313.pyc
 src/__pycache__/*.cpython-314.pyc
 outputs/.gitkeep
+__pycache__/
+outputs_baseline_v1/

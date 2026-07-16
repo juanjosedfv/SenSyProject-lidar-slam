@@ -1,20 +1,42 @@
-"""Level (gravity-align) the KISS-ICP odometry frame.
+"""Level the KISS-ICP odometry frame by removing the LiDAR mount rotation.
 
-KISS-ICP has no IMU, so its ``odom_lidar`` frame inherits the sensor attitude of
-the very first scan. If the LiDAR is mounted at an angle -- or the vehicle
-happens to stand on a slope at t=0 -- the whole trajectory and map come out
-tilted: driving on flat ground then shows up as a steady "climb".
+KISS-ICP has no absolute attitude reference, so its ``odom_lidar`` frame is
+simply the sensor frame of the very first scan. The Ouster on the XTrack is
+mounted at an angle, so that frame is tilted with respect to gravity and the
+whole trajectory and map come out tilted with it: driving on level ground shows
+up as a steady "climb" of z_span = path_length * tan(tilt).
 
-Because the vehicle drives on (approximately) level ground, the best-fit plane
-through the trajectory is a good estimate of the local horizontal. Its normal
-therefore approximates the gravity direction, and rotating that normal onto +Z
-levels both the trajectory and the map.
+Two independent estimators of the vertical are provided, and they differ in
+what they assume:
 
-The residual of the plane fit tells you whether the assumption holds: a small
-residual means the tilt really is a frame rotation, a large one means the
-odometry has genuine vertical drift and this correction is not appropriate.
+  [plane]  Fit a plane through the trajectory POSITIONS and take its normal.
+           Assumes the ground is level. Cheap and robust in magnitude, but its
+           AZIMUTH is only as well conditioned as the trajectory's aspect
+           ratio: on an out-and-back down a corridor (45 x 241 m here, 5.3:1)
+           the across-track coefficient is ~5x noisier than the along-track
+           one, so the tilt direction is poorly determined.
 
-Diagnostics only:
+  [axes]   Take the rotation axes of the odometry ORIENTATIONS. A ground
+           vehicle turns about the vertical, so every incremental rotation
+           expressed in the odom frame shares one axis: gravity. This never
+           looks at the positions and never assumes level ground. Its premise
+           -- that the platform turns about gravity -- is independently
+           confirmed by /fmu/out/vehicle_attitude: median tilt 1.73 deg over
+           the full record, never above 5.88 deg. See probe_attitude.py.
+
+On this dataset the two agree on MAGNITUDE to 0.31 deg (10.01 vs 10.32) and
+disagree on DIRECTION by 6.09 deg. That is not a conflict: [axes] has a
+direction standard error of scatter/sqrt(N) ~= 2-3.5 deg, so the ~5 deg
+residual is [plane]'s azimuth error, exactly as the 5.3:1 aspect ratio
+predicts. **[axes] is the better direction; [plane] is the better-tested
+default.** Hence `method=` rather than a silent switch.
+
+The plane-fit residual is the drift test: it is 0.97 m RMS against a 42.43 m
+z span (2.3 %), i.e. the tilt is a constant frame rotation and not accumulated
+vertical drift. A large residual would mean the opposite and would make this
+whole correction inappropriate.
+
+Diagnostics -- runs both estimators and compares them:
 
     python3 -m src.level --kiss-bag ~/ros2_ws/data/kiss_output
 """
@@ -22,6 +44,8 @@ Diagnostics only:
 from __future__ import annotations
 
 import numpy as np
+
+UP = np.array([0.0, 0.0, 1.0])
 
 
 def fit_plane(points: np.ndarray):
@@ -106,9 +130,10 @@ def level_rotation(points: np.ndarray):
 
     a, b, c, residual_rms, residual_max = fit_plane(points)
     normal = plane_normal(a, b)
-    rotation = rotation_between(normal, np.array([0.0, 0.0, 1.0]))
+    rotation = rotation_between(normal, UP)
 
     info = {
+        "method": "plane",
         "plane_a": a,
         "plane_b": b,
         "plane_c": c,
@@ -120,10 +145,84 @@ def level_rotation(points: np.ndarray):
     return rotation, info
 
 
-def level_transform(points: np.ndarray):
-    """4x4 homogeneous version of :func:`level_rotation` (no translation)."""
+def axis_level_rotation(
+    transforms, stride: int = 50, min_angle_deg: float = 1.0, points=None
+):
+    """Rotation that levels the frame using the ORIENTATION-derived vertical.
 
-    rotation, info = level_rotation(points)
+    Same contract as :func:`level_rotation`, but the vertical comes from
+    :func:`gravity_from_rotation_axes` instead of a plane through the
+    positions. Assumes only that the platform turns about gravity -- not that
+    the ground is level -- and its direction is better conditioned when the
+    trajectory is long and thin.
+
+    If ``points`` is given, the same ``residual_rms_m`` / ``residual_max_m``
+    keys as :func:`level_rotation` are reported, so the two info dicts stay
+    interchangeable for callers that log them. The meaning differs and that is
+    the point: for [plane] the residual is the least-squares minimum by
+    construction, whereas here it is the spread of the positions about a plane
+    perpendicular to the INDEPENDENTLY measured gravity. It is therefore an
+    honest estimate of real terrain relief plus vertical drift, and it will be
+    larger than [plane]'s. Larger is not worse.
+
+    Returns (rotation_3x3, info dict).
+    """
+
+    axis, info = gravity_from_rotation_axes(
+        transforms, stride=stride, min_angle_deg=min_angle_deg
+    )
+    rotation = rotation_between(axis, UP)
+
+    info = dict(info)
+    info["method"] = "axes"
+    info["stride"] = stride
+    # Match level_rotation()'s convention: it reports arctan2(b, a) for the
+    # plane z = a*x + b*y + c, i.e. the azimuth of the DOWN-SLOPE gradient,
+    # which is 180 deg from the upward normal. `axis` here is the upward
+    # gravity direction, so negate before taking the azimuth. Getting this
+    # wrong makes two estimates that are 31.7 deg apart print as 212 deg apart.
+    info["tilt_azimuth_deg"] = float(np.degrees(np.arctan2(-axis[1], -axis[0])))
+    # scatter/sqrt(N): how well the mean direction itself is pinned down, as
+    # opposed to how scattered the individual axes are.
+    info["direction_stderr_deg"] = float(
+        info["mean_axis_deviation_deg"] / np.sqrt(max(info["num_rotations"], 1))
+    )
+
+    if points is not None:
+        levelled = apply_rotation(points, rotation)
+        residual = levelled[:, 2] - float(np.mean(levelled[:, 2]))
+        info["residual_rms_m"] = float(np.sqrt(np.mean(residual**2)))
+        info["residual_max_m"] = float(np.abs(residual).max())
+
+    return rotation, info
+
+
+def level_transform(
+    points: np.ndarray,
+    transforms=None,
+    method: str = "plane",
+    stride: int = 50,
+    min_angle_deg: float = 1.0,
+):
+    """4x4 homogeneous levelling transform (rotation only, no translation).
+
+    ``method="plane"`` reproduces the original behaviour exactly and is the
+    default so that existing results do not move underneath anyone; it is also
+    the A/B control. ``method="axes"`` uses the orientation-derived vertical
+    and needs ``transforms`` (the per-pose 4x4s).
+    """
+
+    if method == "plane":
+        rotation, info = level_rotation(points)
+    elif method == "axes":
+        if transforms is None:
+            raise ValueError("method='axes' needs the per-pose transforms")
+        rotation, info = axis_level_rotation(
+            transforms, stride, min_angle_deg, points=points
+        )
+    else:
+        raise ValueError(f"unknown method {method!r}; use 'plane' or 'axes'")
+
     transform = np.eye(4, dtype="float64")
     transform[:3, :3] = rotation
     return transform, info
@@ -205,6 +304,14 @@ def angle_between(u: np.ndarray, v: np.ndarray) -> float:
 def describe(info: dict) -> str:
     """One-line summary suitable for logs and the report."""
 
+    if info.get("method") == "axes":
+        return (
+            f"tilt {info['tilt_deg']:.2f} deg "
+            f"(azimuth {info['tilt_azimuth_deg']:+.1f} deg), "
+            f"from {info['num_rotations']} turns / "
+            f"{info['total_rotation_deg']:.0f} deg total, "
+            f"direction SE {info['direction_stderr_deg']:.2f} deg"
+        )
     return (
         f"tilt {info['tilt_deg']:.2f} deg "
         f"(azimuth {info['tilt_azimuth_deg']:+.1f} deg), "
@@ -224,6 +331,13 @@ def main() -> None:
     parser.add_argument(
         "--min-angle", type=float, default=1.0, help="Ignore turns below this [deg]"
     )
+    parser.add_argument(
+        "--axes-stride",
+        type=int,
+        default=50,
+        help="Stride for the [axes] estimator in the head-to-head (default 50: "
+        "the sweep below shows it has the lowest direction SE)",
+    )
     args = parser.parse_args()
 
     if __package__ in {None, ""}:
@@ -236,6 +350,8 @@ def main() -> None:
 
     trajectory = load_kiss_odometry(Path(args.kiss_bag).expanduser(), verbose=False)
     xyz = trajectory_xyz(trajectory)
+    transforms = [step.transform for step in trajectory]
+
     rotation, info = level_rotation(xyz)
     levelled = apply_rotation(xyz, rotation)
 
@@ -248,19 +364,30 @@ def main() -> None:
           f"{np.linalg.norm(np.diff(xyz[:, :2], axis=0), axis=1).sum():.1f} m")
     print(f"  horizontal path after : "
           f"{np.linalg.norm(np.diff(levelled[:, :2], axis=0), axis=1).sum():.1f} m")
+
+    residual_fraction = info["residual_rms_m"] / max(
+        xyz[:, 2].max() - xyz[:, 2].min(), 1e-9
+    )
+    print(f"\n  [drift test] residual {info['residual_rms_m']:.2f} m RMS against a "
+          f"{xyz[:, 2].max() - xyz[:, 2].min():.2f} m z span = "
+          f"{100 * residual_fraction:.1f} %")
     if info["residual_rms_m"] > 3.0:
-        print("  warning: large plane residual -- the tilt may be genuine vertical drift")
+        print("  -> LARGE residual: the tilt may be genuine vertical drift, and")
+        print("     rotating it away would be inappropriate.")
+    else:
+        print("  -> small residual: the tilt is a constant FRAME ROTATION, not")
+        print("     accumulated vertical drift. Rotating it away is the right fix.")
 
     plane_normal_vec = plane_normal(info["plane_a"], info["plane_b"])
-    transforms = [step.transform for step in trajectory]
 
     print("\n[method 2] rotation axes of the odometry orientations (independent)")
     print("  Small turns carry little direction information, so the estimate is swept")
     print("  over increasing strides: convergence means noise, drift means bias.")
+    print("  dir SE = scatter/sqrt(N): how well the MEAN direction is pinned down.")
     print(f"\n  {'stride':>7} {'turns':>6} {'tot deg':>8} {'tilt':>7} "
-          f"{'conc':>6} {'scatter':>8} {'vs plane':>9}")
+          f"{'conc':>6} {'scatter':>8} {'dir SE':>7} {'vs plane':>9}")
 
-    converged = None
+    sweep = []
     for stride in (10, 25, 50, 100, 200):
         try:
             axis, axis_info = gravity_from_rotation_axes(
@@ -270,26 +397,72 @@ def main() -> None:
             print(f"  {stride:7d}  unavailable: {exc}")
             continue
         disagreement = angle_between(plane_normal_vec, axis)
+        se = axis_info["mean_axis_deviation_deg"] / np.sqrt(axis_info["num_rotations"])
         print(f"  {stride:7d} {axis_info['num_rotations']:6d} "
               f"{axis_info['total_rotation_deg']:8.0f} "
               f"{axis_info['tilt_deg']:6.2f}d {axis_info['concentration']:6.3f} "
-              f"{axis_info['mean_axis_deviation_deg']:7.1f}d {disagreement:8.2f}d")
-        converged = (axis, axis_info, disagreement)
+              f"{axis_info['mean_axis_deviation_deg']:7.1f}d {se:6.2f}d "
+              f"{disagreement:8.2f}d")
+        sweep.append((stride, axis, axis_info, disagreement, se))
 
-    if converged is None:
+    if not sweep:
         return
 
-    axis, axis_info, disagreement = converged
-    print(f"\n[cross-check] at the longest stride the two independent estimates give")
-    print(f"  tilt magnitude : {info['tilt_deg']:.2f} deg (plane) vs "
-          f"{axis_info['tilt_deg']:.2f} deg (rotation axes)")
-    print(f"  full 3-D angle : {disagreement:.2f} deg apart")
-    if disagreement < 5.0:
-        print("  -> the two agree within the rotation-axis noise; the tilt is a frame")
-        print("     rotation, not vertical drift")
+    tilts = [s[2]["tilt_deg"] for s in sweep]
+    print(f"\n  tilt across strides: {np.mean(tilts):.2f} +/- {np.std(tilts):.2f} deg "
+          f"(range {max(tilts) - min(tilts):.2f})")
+    if np.std(tilts) < 1.0:
+        print("  -> converged, no drift with stride: the magnitude is real.")
     else:
-        print("  -> directions still differ; the rotation-axis estimate is noisy, so")
-        print("     judge mainly on the tilt magnitude and the plane-fit residual")
+        print("  -> still moving with stride: treat the magnitude with caution.")
+
+    # ---- head to head -------------------------------------------------------
+    print(f"\n[head to head] plane normal vs rotation axis (stride {args.axes_stride})")
+    try:
+        rot_axes, info_axes = axis_level_rotation(
+            transforms, stride=args.axes_stride, min_angle_deg=args.min_angle,
+            points=xyz,
+        )
+    except (ValueError, ImportError) as exc:
+        print(f"  unavailable: {exc}")
+        return
+    levelled_axes = apply_rotation(xyz, rot_axes)
+
+    print(f"  [plane] {describe(info)}")
+    print(f"  [axes ] {describe(info_axes)}")
+    print(f"\n  magnitude : {info['tilt_deg']:.2f} vs {info_axes['tilt_deg']:.2f} deg "
+          f"-> {abs(info['tilt_deg'] - info_axes['tilt_deg']):.2f} deg apart")
+    az_gap = abs((info["tilt_azimuth_deg"] - info_axes["tilt_azimuth_deg"] + 180)
+                 % 360 - 180)
+    sep = angle_between(plane_normal_vec, rot_axes.T @ UP)
+    print(f"  azimuth   : {az_gap:.1f} deg apart (both in the down-slope "
+          f"convention)")
+    print(f"  direction : {sep:.2f} deg apart in 3-D")
+    print(f"              [axes] direction SE is "
+          f"{info_axes['direction_stderr_deg']:.2f} deg, so roughly "
+          f"{np.sqrt(max(sep**2 - info_axes['direction_stderr_deg']**2, 0)):.2f} deg")
+    print( "              of that is [plane]'s azimuth error -- which is what a "
+           "long, thin")
+    print( "              trajectory predicts, since the across-track plane "
+           "coefficient is")
+    print( "              the poorly conditioned one.")
+
+    print(f"\n  {'':22} {'[plane]':>10} {'[axes]':>10}")
+    for name, a, b in (
+        ("z span after [m]",
+         levelled[:, 2].max() - levelled[:, 2].min(),
+         levelled_axes[:, 2].max() - levelled_axes[:, 2].min()),
+        ("horiz. path after [m]",
+         np.linalg.norm(np.diff(levelled[:, :2], axis=0), axis=1).sum(),
+         np.linalg.norm(np.diff(levelled_axes[:, :2], axis=0), axis=1).sum()),
+    ):
+        print(f"  {name:22} {a:10.2f} {b:10.2f}")
+
+    print("\n  NOTE: do NOT pick a method on 'z span after'. The plane fit is the")
+    print("  least-squares minimiser of exactly that quantity, so it wins by")
+    print("  construction -- comparing on it is circular. The only fair test is")
+    print("  horizontal RMSE against GNSS, which lives in pipeline_kiss.py:")
+    print("    level_transform(xyz, transforms=transforms, method='axes')")
 
 
 if __name__ == "__main__":
