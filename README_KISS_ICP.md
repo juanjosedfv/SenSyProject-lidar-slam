@@ -195,7 +195,7 @@ python3 -m src.pipeline_kiss \
 python3 -m src.build_map \
     --bag /home/jinghao/ros2_ws/data/rosbag \
     --kiss-bag /home/jinghao/ros2_ws/data/kiss_output \
-    --level --max-range 25
+    --level
 ```
 
 Streams `/ouster/points` from the bag, looks each scan's pose up by header stamp,
@@ -203,10 +203,7 @@ transforms it and accumulates into a voxel grid. Reusing the recorded poses mean
 the map is consistent with the trajectory CSV by construction, and KISS-ICP does
 not have to be re-run.
 
-`--stride 10` (default) uses every 10th scan; `--voxel 0.25` sets the resolution;
-`--max-range` gates out the noisy far returns (the OS0-32 is a short-range
-sensor — the intro quotes `< 100 m`, and usable range is well under that).
-Memory stays bounded because the grid only ever stores occupied voxels.
+--stride 10 (default) uses every 10th scan; --voxel 0.25 sets the resolution; --max-range (default 50 m) gates out the noisy far returns. The delivered map.pcd uses the defaults.
 
 **`--level` matters here as much as for the trajectory**: without it the map is
 built in a frame tilted 10°, so flat ground comes out as a ramp.
