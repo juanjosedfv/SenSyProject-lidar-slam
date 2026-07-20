@@ -3,7 +3,7 @@ import csv
 import os
 from pathlib import Path
 import numpy as np
-from .geo import GeoOrigin, latlon_to_enu
+from geo import GeoOrigin, latlon_to_enu
 import matplotlib.pyplot as plt
 
 

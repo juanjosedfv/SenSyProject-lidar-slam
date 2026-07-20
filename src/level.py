@@ -345,8 +345,8 @@ def main() -> None:
 
         sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-    from .kiss_adapter import load_kiss_odometry
-    from .odometry import trajectory_xyz
+    from kiss_icp.adapter import load_kiss_odometry
+    from slam_icp.trajectory import trajectory_xyz
 
     trajectory = load_kiss_odometry(Path(args.kiss_bag).expanduser(), verbose=False)
     xyz = trajectory_xyz(trajectory)

@@ -32,12 +32,13 @@ if __package__ in {None, ""}:
     import sys
 
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    __package__ = "src"
+    __package__ = ""
 
-from .kiss_adapter import find_bag_db, load_kiss_odometry
-from .level import describe, level_transform
-from .odometry import write_ascii_pcd
-from .preprocess import filter_points
+from baseline_icp.odometry import write_ascii_pcd
+from kiss_icp.adapter import find_bag_db, load_kiss_odometry
+from level import describe, level_transform
+from preprocess import filter_points
+from slam_icp.trajectory import from_odometry_steps, timed_pose_to_transform, write_trajectory_csv
 
 # sensor_msgs/PointField datatype enum -> numpy scalar type
 _POINTFIELD_DTYPES = {
@@ -167,27 +168,38 @@ def main() -> None:
     parser.add_argument("--config", default="config/config.yaml", help="YAML config file")
     parser.add_argument("--bag", default=None, help="Original rosbag directory")
     parser.add_argument("--kiss-bag", default=None, help="Recorded /kiss/odometry bag")
-    parser.add_argument("--topic", default="/ouster/points", help="PointCloud2 topic")
+    parser.add_argument("--topic", default=None, help="PointCloud2 topic")
     parser.add_argument("--out", default=None, help="Output .pcd (default: config output.map_pcd)")
-    parser.add_argument("--stride", type=int, default=10, help="Use every Nth scan")
-    parser.add_argument("--voxel", type=float, default=0.25, help="Map voxel size [m]")
-    parser.add_argument("--min-range", type=float, default=1.0, help="Drop points closer than this")
-    parser.add_argument("--max-range", type=float, default=50.0, help="Drop points beyond this")
+    parser.add_argument("--stride", type=int, default=None, help="Use every Nth scan")
+    parser.add_argument("--voxel", type=float, default=None, help="Map voxel size [m]")
+    parser.add_argument("--min-range", type=float, default=None, help="Drop points closer than this")
+    parser.add_argument("--max-range", type=float, default=None, help="Drop points beyond this")
     parser.add_argument(
-        "--remove-ground", action="store_true", help="Drop points below --ground-z"
+        "--remove-ground", action="store_true", default=None, help="Drop points below --ground-z"
     )
-    parser.add_argument("--ground-z", type=float, default=-1.5, help="Ground threshold [m]")
+    parser.add_argument("--ground-z", type=float, default=None, help="Ground threshold [m]")
     parser.add_argument(
-        "--tolerance", type=float, default=0.02, help="Max stamp mismatch to accept [s]"
+        "--tolerance", type=float, default=None, help="Max stamp mismatch to accept [s]"
     )
     parser.add_argument(
         "--level",
         action="store_true",
+        default=None,
         help="Gravity-align the map using the trajectory plane (same as pipeline_kiss --level)",
     )
     args = parser.parse_args()
 
     cfg = load_config(args.config)
+    map_cfg = cfg.get("mapping", {})
+    topic = args.topic or cfg["data"].get("pointcloud_topic", "/ouster/points")
+    stride = args.stride if args.stride is not None else int(map_cfg.get("scan_stride", 10))
+    voxel = args.voxel if args.voxel is not None else float(map_cfg.get("voxel_size_m", 0.25))
+    min_range = args.min_range if args.min_range is not None else float(map_cfg.get("min_range_m", 1.0))
+    max_range = args.max_range if args.max_range is not None else float(map_cfg.get("max_range_m", 50.0))
+    remove_ground = args.remove_ground if args.remove_ground is not None else bool(map_cfg.get("remove_ground", False))
+    ground_z = args.ground_z if args.ground_z is not None else float(map_cfg.get("ground_z_threshold_m", -1.5))
+    tolerance = args.tolerance if args.tolerance is not None else float(map_cfg.get("pose_tolerance_s", 0.02))
+    level_enabled = args.level if args.level is not None else bool(map_cfg.get("leveling_enabled", False))
     bag_dir = Path(args.bag or cfg["data"]["rosbag_dir"]).expanduser()
     kiss_bag = Path(args.kiss_bag or cfg["data"].get("kiss_bag", "data/kiss_output")).expanduser()
     out_pcd = Path(args.out or cfg["output"]["map_pcd"]).expanduser()
@@ -208,17 +220,35 @@ def main() -> None:
     print("Building global point-cloud map from KISS-ICP poses")
     print(f"  rosbag     : {bag_dir}")
     print(f"  poses      : {kiss_bag}")
-    print(f"  stride     : every {args.stride} scans")
-    print(f"  voxel      : {args.voxel} m")
-    print(f"  range gate : {args.min_range} .. {args.max_range} m")
+    print(f"  stride     : every {stride} scans")
+    print(f"  voxel      : {voxel} m")
+    print(f"  range gate : {min_range} .. {max_range} m")
 
-    trajectory = load_kiss_odometry(kiss_bag, verbose=False)
-    pose_times = np.array([s.timestamp_s for s in trajectory], dtype="float64")
-    transforms = [np.asarray(s.transform, dtype="float64") for s in trajectory]
+    trajectory = sorted(
+        load_kiss_odometry(kiss_bag, verbose=False),
+        key=lambda step: step.timestamp_s,
+    )
+    backend_cfg = cfg.get("backend", {})
+    local_poses = from_odometry_steps(
+        trajectory,
+        backend="kiss_icp",
+        parent_frame=backend_cfg.get("parent_frame", "odom_lidar"),
+        child_frame=backend_cfg.get("child_frame", "os_sensor"),
+    )
+    local_path = cfg["output"].get(
+        "trajectory_local_csv", "outputs/trajectory_local.csv"
+    )
+    write_trajectory_csv(local_path, local_poses)
+    pose_times = np.array([pose.timestamp for pose in local_poses], dtype="float64")
+    transforms = [timed_pose_to_transform(pose) for pose in local_poses]
+    order = np.argsort(pose_times, kind="stable")
+    pose_times = pose_times[order]
+    transforms = [transforms[i] for i in order]
     print(f"  loaded {len(trajectory)} poses "
           f"({pose_times[0]:.1f} .. {pose_times[-1]:.1f})")
+    print(f"  local poses : {local_path}")
 
-    if args.level:
+    if level_enabled:
         # Pre-multiplying the poses rotates positions and orientations together,
         # so the map stays consistent with a levelled trajectory.
         xyz = np.array([t[:3, 3] for t in transforms], dtype="float64")
@@ -227,11 +257,11 @@ def main() -> None:
         print(f"  gravity alignment: {describe(level_info)}")
 
     db_path = find_bag_db(bag_dir)
-    ids = read_cloud_index(db_path, args.topic)
-    selected = ids[:: max(1, args.stride)]
-    print(f"  {len(ids)} scans on {args.topic}, using {len(selected)}")
+    ids = read_cloud_index(db_path, topic)
+    selected = ids[:: max(1, stride)]
+    print(f"  {len(ids)} scans on {topic}, using {len(selected)}")
 
-    grid = VoxelAccumulator(args.voxel)
+    grid = VoxelAccumulator(voxel)
     used = skipped = 0
     total_points = 0
     started = time.time()
@@ -247,7 +277,7 @@ def main() -> None:
             msg = deserialize_message(bytes(row[0]), PointCloud2)
             stamp = float(msg.header.stamp.sec) + float(msg.header.stamp.nanosec) * 1e-9
 
-            pose_index = nearest_pose_index(pose_times, stamp, args.tolerance)
+            pose_index = nearest_pose_index(pose_times, stamp, tolerance)
             if pose_index is None:
                 skipped += 1
                 continue
@@ -255,10 +285,10 @@ def main() -> None:
             points = cloud_to_xyz(msg)
             points = filter_points(
                 points,
-                min_range_m=args.min_range,
-                max_range_m=args.max_range,
-                remove_ground=args.remove_ground,
-                ground_z_threshold_m=args.ground_z,
+                min_range_m=min_range,
+                max_range_m=max_range,
+                remove_ground=remove_ground,
+                ground_z_threshold_m=ground_z,
             )
             if len(points) == 0:
                 continue
@@ -283,7 +313,7 @@ def main() -> None:
     print(f"\nMerged {total_points:,} points from {used} scans "
           f"into {len(cloud):,} voxels")
     if skipped:
-        print(f"  {skipped} scans had no pose within {args.tolerance}s "
+        print(f"  {skipped} scans had no pose within {tolerance}s "
               "(expected for scans recorded before /kiss/odometry capture started)")
 
     extent = cloud.max(axis=0) - cloud.min(axis=0)

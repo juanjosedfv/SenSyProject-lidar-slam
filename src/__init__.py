@@ -1,1 +1,0 @@
-"""LIDAR-based positioning package"""

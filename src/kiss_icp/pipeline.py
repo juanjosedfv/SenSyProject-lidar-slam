@@ -32,10 +32,10 @@ import yaml
 if __package__ in {None, ""}:
     import sys
 
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    __package__ = "src"
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    __package__ = "kiss_icp"
 
-from .evaluation import (
+from evaluation import (
     align_2d_rigid,
     compute_rmse,
     gnss_to_enu,
@@ -45,10 +45,10 @@ from .evaluation import (
     save_evaluation_plots,
     save_reference_diagnostic_plot,
 )
-from .geo import enu_to_latlon, enu_to_ned
-from .kiss_adapter import load_kiss_odometry
-from .level import apply_rotation, describe, level_rotation
-from .odometry import trajectory_xyz
+from geo import enu_to_latlon, enu_to_ned
+from level import apply_rotation, describe, level_rotation
+from slam_icp.trajectory import from_odometry_steps, trajectory_xyz, write_trajectory_csv as write_local_csv
+from .adapter import load_kiss_odometry
 
 
 def load_config(path: str | Path) -> dict:
@@ -162,7 +162,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Evaluate recorded KISS-ICP odometry against corrected GNSS."
     )
-    parser.add_argument("--config", default="config/config.yaml", help="YAML config file")
+    parser.add_argument("--config", default="config/kiss_icp.yaml", help="YAML config file")
     parser.add_argument(
         "--kiss-bag",
         default=None,
@@ -171,9 +171,7 @@ def main() -> None:
     parser.add_argument(
         "--gnss-csv", default=None, help="Corrected GNSS CSV (default: config data.gnss_csv)"
     )
-    parser.add_argument(
-        "--odom-topic", default="/kiss/odometry", help="Recorded odometry topic"
-    )
+    parser.add_argument("--odom-topic", default=None, help="Recorded odometry topic")
     parser.add_argument(
         "--gnss-time-offset",
         type=float,
@@ -183,6 +181,7 @@ def main() -> None:
     parser.add_argument(
         "--level",
         action="store_true",
+        default=None,
                 help=(
             "Compensate the LiDAR mount rotation by fitting a plane through the "
             "trajectory. KISS-ICP has no absolute attitude reference, so a tilted "
@@ -193,14 +192,40 @@ def main() -> None:
     parser.add_argument(
         "--scan-offset",
         action="store_true",
+        default=None,
         help="Brute-force the best clock offset instead of trusting the configured one",
     )
-    parser.add_argument("--scan-span", type=float, default=60.0, help="Scan +/- this many s")
-    parser.add_argument("--scan-step", type=float, default=5.0, help="Scan step in s")
+    parser.add_argument("--scan-span", type=float, default=None, help="Scan +/- this many s")
+    parser.add_argument("--scan-step", type=float, default=None, help="Scan step in s")
     args = parser.parse_args()
 
     cfg = load_config(args.config)
     out_cfg = cfg["output"]
+    evaluation_cfg = cfg.get("evaluation", {})
+    backend_cfg = cfg.get("backend", {})
+    odom_topic = args.odom_topic or cfg["data"].get("kiss_topic", "/kiss/odometry")
+    level_enabled = (
+        args.level
+        if args.level is not None
+        else bool(evaluation_cfg.get("leveling_enabled", False))
+    )
+    scan_offset_enabled = (
+        args.scan_offset
+        if args.scan_offset is not None
+        else bool(evaluation_cfg.get("offset_scan_enabled", False))
+    )
+    scan_span = (
+        args.scan_span
+        if args.scan_span is not None
+        else float(evaluation_cfg.get("offset_scan_span_s", 60.0))
+    )
+    scan_step = (
+        args.scan_step
+        if args.scan_step is not None
+        else float(evaluation_cfg.get("offset_scan_step_s", 5.0))
+    )
+    if bool(evaluation_cfg.get("scale_alignment", False)):
+        raise ValueError("KISS evaluation supports rigid alignment only; scale_alignment must be false")
     Path(out_cfg["output_dir"]).mkdir(parents=True, exist_ok=True)
     Path(out_cfg["plot_dir"]).mkdir(parents=True, exist_ok=True)
 
@@ -221,12 +246,21 @@ def main() -> None:
     print(f"  GNSS truth   : {gnss_csv}")
 
     # --- estimate ---------------------------------------------------------
-    trajectory = load_kiss_odometry(kiss_bag, topic_name=args.odom_topic)
+    trajectory = load_kiss_odometry(kiss_bag, topic_name=odom_topic)
+    trajectory = sorted(trajectory, key=lambda step: step.timestamp_s)
+    local_poses = from_odometry_steps(
+        trajectory,
+        backend="kiss_icp",
+        parent_frame=backend_cfg.get("parent_frame", "odom_lidar"),
+        child_frame=backend_cfg.get("child_frame", "os_sensor"),
+    )
+    local_path = out_cfg.get("trajectory_local_csv", "outputs/trajectory_local.csv")
+    write_local_csv(local_path, local_poses)
     xyz = trajectory_xyz(trajectory)
     timestamps = np.array([step.timestamp_s for step in trajectory], dtype="float64")
 
     level_info = None
-    if args.level:
+    if level_enabled:
         rotation, level_info = level_rotation(xyz)
         before_z = xyz[:, 2].max() - xyz[:, 2].min()
         xyz = apply_rotation(xyz, rotation)
@@ -250,8 +284,8 @@ def main() -> None:
           f"{timestamps[-1] + offset:.1f}")
 
     # --- align & score ----------------------------------------------------
-    if args.scan_offset:
-        best = scan_offsets(gnss, xyz, timestamps, offset, args.scan_span, args.scan_step)
+    if scan_offset_enabled:
+        best = scan_offsets(gnss, xyz, timestamps, offset, scan_span, scan_step)
         offset = best["offset"]
         scored = best
     else:
@@ -300,10 +334,10 @@ def main() -> None:
     metrics = {
         "source": "kiss_icp_ros",
         "odometry_bag": str(kiss_bag),
-        "odometry_topic": args.odom_topic,
+        "odometry_topic": odom_topic,
         "gnss_time_offset_s": offset,
-        "gnss_offset_scanned": bool(args.scan_offset),
-        "gravity_levelled": bool(args.level),
+        "gnss_offset_scanned": scan_offset_enabled,
+        "gravity_levelled": level_enabled,
         "frame_tilt_deg": level_info["tilt_deg"] if level_info else None,
         "frame_tilt_residual_rms_m": level_info["residual_rms_m"] if level_info else None,
         "num_poses": len(trajectory),
@@ -326,6 +360,7 @@ def main() -> None:
 
     # --- report -----------------------------------------------------------
     print()
+    print(f"Wrote local poses: {local_path}")
     print(f"Wrote trajectory : {out_cfg['trajectory_csv']}")
     print(f"Wrote velocity   : {out_cfg['velocity_csv']}")
     print(f"Wrote metrics    : {metrics_path}")

@@ -171,7 +171,7 @@ def run_icp_odometry(
     initial_poses: list[dict] | None = None,
 ):
 
-    from .preprocess import voxel_downsample
+    from preprocess import voxel_downsample
 
     if not scans:
         raise ValueError("No scans available for odometry")

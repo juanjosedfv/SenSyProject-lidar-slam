@@ -12,11 +12,23 @@ wall clock of when you recorded, i.e. the wrong epoch entirely).
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 
-from .odometry import OdometryStep, identity_transform
+
+@dataclass(frozen=True)
+class KissOdometryStep:
+    timestamp_s: float
+    source_file: str
+    transform: object
+    fitness: float
+    inlier_rmse: float
+
+
+def identity_transform():
+    return np.eye(4, dtype="float64")
 
 
 def find_bag_db(bag_dir: str | Path) -> Path:
@@ -76,7 +88,7 @@ def load_kiss_odometry(
     bag_dir: str | Path,
     topic_name: str = "/kiss/odometry",
     verbose: bool = True,
-) -> list[OdometryStep]:
+) -> list[KissOdometryStep]:
     """Load recorded KISS-ICP odometry as a list of ``OdometryStep``.
 
     Requires a sourced ROS 2 environment (rclpy + nav_msgs) for deserialization.
@@ -95,7 +107,7 @@ def load_kiss_odometry(
     db_path = find_bag_db(bag_dir)
     rows = _read_raw_messages(db_path, topic_name)
 
-    trajectory: list[OdometryStep] = []
+    trajectory: list[KissOdometryStep] = []
     for receive_time_ns, blob in rows:
         msg = deserialize_message(bytes(blob), Odometry)
 
@@ -116,7 +128,7 @@ def load_kiss_odometry(
         transform[2, 3] = float(position.z)
 
         trajectory.append(
-            OdometryStep(
+            KissOdometryStep(
                 timestamp_s=timestamp_s,
                 source_file=f"{topic_name}@{int(receive_time_ns)}",
                 transform=transform,
@@ -155,7 +167,7 @@ def _report(trajectory, rows, db_path: Path, topic_name: str) -> None:
         print(f"  mean scan rate     : {1.0 / float(np.mean(steps)):.2f} Hz")
 
 
-def trajectory_time_bounds(trajectory: list[OdometryStep]) -> tuple[float, float]:
+def trajectory_time_bounds(trajectory: list[KissOdometryStep]) -> tuple[float, float]:
     """Return (first, last) sensor timestamp in seconds."""
 
     return trajectory[0].timestamp_s, trajectory[-1].timestamp_s

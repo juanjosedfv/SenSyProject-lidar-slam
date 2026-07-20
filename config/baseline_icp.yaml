@@ -1,0 +1,52 @@
+project:
+  name: baseline_icp
+  default_backend: kiss_icp
+
+backend:
+  name: baseline_icp
+  parent_frame: baseline_icp_map
+  child_frame: baseline_icp_sensor
+
+data:
+  dataset_name: Test1_data
+  rosbag_dir: data/Test1_data/rosbag
+  rosbag_db: data/Test1_data/rosbag/rosbag_0.db3
+  rosbag_metadata: data/Test1_data/rosbag/metadata.yaml
+  pointcloud_topic: /ouster/points
+  pointcloud_dir: data/Test1_data/rosbag/rosbag_data/laz_clouds
+  pointcloud_glob: "*.laz"
+  max_scans: 120
+  scan_stride: 5
+  start_index: 300
+  gnss_csv: data/xtrack_gnss_corrected/xtrack_gnss_corrected/xtrack_global_position_t12.csv
+  gnss_time_offset_s: 0
+  imu_csv: null
+
+preprocessing:
+  voxel_size_m: 0.35
+  min_range_m: 1.0
+  max_range_m: 15.0
+  remove_ground: true
+  ground_z_threshold_m: -0.1
+
+odometry:
+  use_gnss_seed: false
+  icp_max_correspondence_distance_m: 1.0
+  icp_max_iterations: 50
+  icp_tolerance_m: 0.0001
+  icp_degenerate_rmse_m: 0.000001
+  use_scan_to_map: true
+  use_motion_model: true
+  icp_max_correction_m: 2.0
+  map_voxel_size_m: 0.5
+  keyframe_translation_m: 1.0
+  keyframe_rotation_deg: 10.0
+
+output:
+  output_dir: outputs/test1_baseline_icp
+  trajectory_local_csv: outputs/test1_baseline_icp/trajectory_local.csv
+  trajectory_csv: outputs/test1_baseline_icp/trajectory_estimate.csv
+  velocity_csv: outputs/test1_baseline_icp/velocity_ned.csv
+  map_pcd: outputs/test1_baseline_icp/map.pcd
+  metrics_json: outputs/test1_baseline_icp/metrics.json
+  plot_dir: outputs/test1_baseline_icp/plots

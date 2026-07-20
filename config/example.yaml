@@ -1,0 +1,85 @@
+# Replace every path below with data and outputs available on your machine.
+run:
+  name: example_slam
+  backend: baseline_icp
+  save_checkpoints: false
+
+inputs:
+  trajectory_csv: /path/to/trajectory_local.csv
+  lidar_bag: /path/to/raw_lidar_rosbag
+  lidar_topic: /ouster/points
+  reference_map: /path/to/original_map.pcd
+
+frames:
+  parent_frame: baseline_icp_map
+  child_frame: baseline_icp_sensor
+
+keyframes:
+  translation_threshold_m: 1.0
+  yaw_threshold_deg: 10.0
+  time_threshold_s: 2.0
+
+loop_search:
+  radius_m: 8.0
+  minimum_time_separation_s: 120.0
+  minimum_id_separation: 100
+  maximum_candidates: 200
+
+loop_registration:
+  pose_tolerance_s: 0.02
+  minimum_range_m: 1.0
+  maximum_range_m: 50.0
+  voxel_size_m: 0.25
+  maximum_correspondence_distance_m: 1.5
+  maximum_iterations: 50
+
+loop_closure:
+  # Add only loop pairs that have been inspected and accepted.
+  accepted_pairs: []
+
+optimization:
+  odometry_translation_sigma_m: 0.10
+  odometry_yaw_sigma_deg: 2.0
+  loop_translation_sigma_m: 0.35
+  loop_yaw_sigma_deg: 2.0
+  maximum_evaluations: 300
+  gradient_tolerance: 0.00001
+
+mapping:
+  enabled: true
+  scan_stride: 10
+  voxel_size_m: 0.25
+  minimum_range_m: 1.0
+  maximum_range_m: 50.0
+  pose_tolerance_s: 0.02
+  leveling_enabled: false
+  leveling_reference_trajectory: /path/to/trajectory_local.csv
+
+evaluation:
+  enabled: false
+  gnss_csv: /path/to/corrected_gnss.csv
+  gnss_time_offset_s: 0.0
+  leveling_enabled: false
+  scale_alignment: false
+
+visualization:
+  enabled: false
+  generate_map_plots: false
+  map_plot_outputs:
+    - slam_map_topdown_height
+    - route_kiss_vs_gnss
+    - slam_map_with_route_and_gnss
+  generate_route_plots: false
+  loop_radius_m: 25.0
+  plot_stride: 5
+  z_min: null
+  z_max: null
+
+outputs:
+  output_dir: outputs/example_slam
+  corrected_trajectory: outputs/example_slam/trajectory_slam_local.csv
+  corrected_map: outputs/example_slam/map_slam.pcd
+  run_summary: outputs/example_slam/run_summary.json
+  metrics: outputs/example_slam/metrics.json
+  plots_dir: outputs/example_slam/plots
+  checkpoints_dir: outputs/example_slam/checkpoints

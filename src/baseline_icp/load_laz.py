@@ -3,7 +3,6 @@ from dataclasses import dataclass
 from pathlib import Path
 import re
 from typing import Iterable
-import laspy
 import numpy as np
 
 
@@ -45,6 +44,14 @@ def select_files(
 
 
 def read_laz_points(path: str | Path):
+    try:
+        import laspy
+    except ImportError as exc:
+        raise RuntimeError(
+            "Reading LAZ scans requires laspy with lazrs support. "
+            "Install the dependencies from requirements.txt."
+        ) from exc
+
     las = laspy.read(path)
     return np.column_stack((las.x, las.y, las.z)).astype("float64", copy=False)
 

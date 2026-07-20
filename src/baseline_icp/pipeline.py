@@ -9,11 +9,11 @@ import yaml
 if __package__ in {None, ""}:
     import sys
 
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    __package__ = "src"
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    __package__ = "baseline_icp"
 
 from .dataset import resolve_dataset_paths
-from .evaluation import (
+from evaluation import (
     align_2d_rigid,
     compute_rmse,
     gnss_to_enu,
@@ -23,10 +23,11 @@ from .evaluation import (
     save_reference_diagnostic_plot,
     save_evaluation_plots,
 )
-from .geo import enu_to_latlon, enu_to_ned
+from geo import enu_to_latlon, enu_to_ned
+from preprocess import preprocess_scan
+from slam_icp.trajectory import from_odometry_steps, write_trajectory_csv as write_local_csv
 from .load_laz import discover_laz_files, load_scan, select_files
 from .odometry import run_icp_odometry, trajectory_xyz, write_ascii_pcd
-from .preprocess import preprocess_scan
 
 
 def load_config(path: str | Path) -> dict:
@@ -134,7 +135,7 @@ def _load_fmu_local_xy(path: Path, timestamps):
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run LIDAR-based positioning pipeline.")
-    parser.add_argument("--config", default="config/config.yaml", help="Path to YAML config file")
+    parser.add_argument("--config", default="config/baseline_icp.yaml", help="Path to YAML config file")
     parser.add_argument("--max-scans", type=int, default=None, help="Override config max_scans")
     parser.add_argument("--scan-stride", type=int, default=None, help="Override config scan_stride")
     parser.add_argument("--start-index", type=int, default=None, help="Override config start_index")
@@ -208,6 +209,19 @@ def main() -> None:
 
     trajectory, accumulated_map = run_icp_odometry(
         scans, cfg["odometry"], initial_poses=gnss_initial_poses,
+    )
+    backend_cfg = cfg.get("backend", {})
+    local_path = cfg["output"].get(
+        "trajectory_local_csv", output_dir / "trajectory_local.csv"
+    )
+    write_local_csv(
+        local_path,
+        from_odometry_steps(
+            trajectory,
+            backend="baseline_icp",
+            parent_frame=backend_cfg.get("parent_frame", "baseline_icp_map"),
+            child_frame=backend_cfg.get("child_frame", "baseline_icp_sensor"),
+        ),
     )
     write_ascii_pcd(cfg["output"]["map_pcd"], accumulated_map)
     xyz = trajectory_xyz(trajectory)
@@ -308,6 +322,7 @@ def main() -> None:
     metrics_path = Path(cfg["output"].get("metrics_json", output_dir / "metrics.json"))
     metrics_path.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
 
+    print(f"Wrote local poses: {local_path}")
     print(f"Wrote trajectory: {cfg['output']['trajectory_csv']}")
     print(f"Wrote velocity: {cfg['output']['velocity_csv']}")
     print(f"Wrote map: {cfg['output']['map_pcd']}")
