@@ -1504,8 +1504,8 @@ def shared_height_range(
 
 def calculate_leveled_loop_centre(
     keyframes_path: str | Path,
-    source_id: int,
-    target_id: int,
+    source_id: int | None,
+    target_id: int | None,
     level_rotation_matrix: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     source = load_keyframe_position(keyframes_path, source_id)
@@ -1743,19 +1743,27 @@ def generate_map_plots(
 
     kiss_leveled = apply_rotation(kiss_xyz, level_matrix)
     slam_leveled = apply_rotation(slam_xyz, level_matrix)
-    loop_centre, source_position, target_position = (
-        calculate_leveled_loop_centre_from_keyframes(
-            keyframes, source_id, target_id, level_matrix
+    has_loop = source_id is not None and target_id is not None
+    if has_loop:
+        loop_centre, source_position, target_position = (
+            calculate_leveled_loop_centre_from_keyframes(
+                keyframes, source_id, target_id, level_matrix
+            )
+            if keyframes is not None
+            else calculate_leveled_loop_centre(
+                keyframes_path, source_id, target_id, level_matrix
+            )
         )
-        if keyframes is not None
-        else calculate_leveled_loop_centre(
-            keyframes_path, source_id, target_id, level_matrix
-        )
-    )
-    kiss_loop = crop_xy(kiss_points, loop_centre[:2], loop_radius_m)
-    slam_loop = crop_xy(slam_points, loop_centre[:2], loop_radius_m)
-    if len(kiss_loop) == 0 or len(slam_loop) == 0:
-        raise ValueError("The loop crop contains no points from at least one map")
+        kiss_loop = crop_xy(kiss_points, loop_centre[:2], loop_radius_m)
+        slam_loop = crop_xy(slam_points, loop_centre[:2], loop_radius_m)
+        if len(kiss_loop) == 0 or len(slam_loop) == 0:
+            raise ValueError("The loop crop contains no points from at least one map")
+    else:
+        loop_centre = None
+        source_position = None
+        target_position = None
+        kiss_loop = np.empty((0, 3), dtype=np.float64)
+        slam_loop = np.empty((0, 3), dtype=np.float64)
 
     gnss_raw = load_gnss_ground_truth(gnss_csv_path)
     gnss = gnss_to_enu(gnss_raw, origin_from_gnss(gnss_raw))
@@ -1773,14 +1781,24 @@ def generate_map_plots(
     full_height = shared_height_range(
         kiss_points, slam_points, minimum_z_m, maximum_z_m
     )
-    loop_x = (float(loop_centre[0] - loop_radius_m), float(loop_centre[0] + loop_radius_m))
-    loop_y = (float(loop_centre[1] - loop_radius_m), float(loop_centre[1] + loop_radius_m))
-    loop_height = shared_height_range(
-        kiss_loop, slam_loop, minimum_z_m, maximum_z_m
+    loop_x = (
+        (float(loop_centre[0] - loop_radius_m), float(loop_centre[0] + loop_radius_m))
+        if has_loop
+        else None
+    )
+    loop_y = (
+        (float(loop_centre[1] - loop_radius_m), float(loop_centre[1] + loop_radius_m))
+        if has_loop
+        else None
+    )
+    loop_height = (
+        shared_height_range(kiss_loop, slam_loop, minimum_z_m, maximum_z_m)
+        if has_loop
+        else None
     )
 
     output_path = Path(output_directory)
-    suffix = f"{source_id}_{target_id}"
+    suffix = f"{source_id}_{target_id}" if has_loop else "no_loop"
     outputs = {
         "kiss_map_topdown_height": output_path / "kiss_map_topdown_height.png",
         "slam_map_topdown_height": output_path / "slam_map_topdown_height.png",
@@ -1795,6 +1813,8 @@ def generate_map_plots(
         "slam_map_with_route_and_gnss": output_path / "slam_map_with_route_and_gnss.png",
     }
     selected_names = set(outputs) if selected_outputs is None else set(selected_outputs)
+    if not has_loop:
+        selected_names -= {"kiss_map_loop_height", "slam_map_loop_height", "map_overlay_loop"}
     unknown_names = selected_names - set(outputs)
     if unknown_names:
         raise ValueError("Unknown map plot output: " + ", ".join(sorted(unknown_names)))
@@ -1920,24 +1940,24 @@ def generate_map_plots(
             "level_reference_trajectory": str(level_reference_trajectory_path),
         },
         "gnss_time_offset_s": float(gnss_time_offset_s),
-        "source_keyframe_id": int(source_id),
-        "target_keyframe_id": int(target_id),
+        "source_keyframe_id": None if source_id is None else int(source_id),
+        "target_keyframe_id": None if target_id is None else int(target_id),
         "kiss_point_count_total": int(len(kiss_points_all)),
         "slam_point_count_total": int(len(slam_points_all)),
         "kiss_point_count_after_height_filter": int(len(kiss_points)),
         "slam_point_count_after_height_filter": int(len(slam_points)),
         "kiss_loop_point_count": int(len(kiss_loop)),
         "slam_loop_point_count": int(len(slam_loop)),
-        "leveled_source_xyz_m": source_position.tolist(),
-        "leveled_target_xyz_m": target_position.tolist(),
-        "loop_centre_xyz_m": loop_centre.tolist(),
+        "leveled_source_xyz_m": None if source_position is None else source_position.tolist(),
+        "leveled_target_xyz_m": None if target_position is None else target_position.tolist(),
+        "loop_centre_xyz_m": None if loop_centre is None else loop_centre.tolist(),
         "loop_radius_m": float(loop_radius_m),
         "plot_stride": int(plot_stride),
         "z_filter_m": {"minimum": minimum_z_m, "maximum": maximum_z_m},
         "full_map_shared_xy_limits_m": {"x": list(full_x), "y": list(full_y)},
-        "loop_shared_xy_limits_m": {"x": list(loop_x), "y": list(loop_y)},
+        "loop_shared_xy_limits_m": None if loop_x is None or loop_y is None else {"x": list(loop_x), "y": list(loop_y)},
         "full_map_shared_height_range_m": list(full_height),
-        "loop_region_shared_height_range_m": list(loop_height),
+        "loop_region_shared_height_range_m": None if loop_height is None else list(loop_height),
         "gnss_match_count": int(valid.sum()),
         "leveling": level_information,
         "outputs": {name: str(path) for name, path in generated_outputs.items()},

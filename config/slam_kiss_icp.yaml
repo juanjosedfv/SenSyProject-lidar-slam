@@ -1,35 +1,35 @@
 run:
-  name: test1_slam_tuning_01
+  name: slam_kiss_icp
   backend: kiss_icp
-  save_checkpoints: true
+  save_checkpoints: false
 
 inputs:
-  trajectory_csv: outputs/test2_kiss/trajectory_local.csv
-  lidar_bag: data/Test2_data/rosbag
+  trajectory_csv: outputs/test1_kiss/trajectory_local.csv
+  lidar_bag: data/Test1_data/rosbag
   lidar_topic: /ouster/points
-  reference_map: outputs/test2_kiss/map.pcd
+  reference_map: outputs/test1_kiss/map.pcd
 
 frames:
   parent_frame: odom_lidar
   child_frame: os_sensor
 
 keyframes:
-  translation_threshold_m: 0.50
-  yaw_threshold_deg: 5.0
-  time_threshold_s: 1.0
+  translation_threshold_m: 1.0
+  yaw_threshold_deg: 10.0
+  time_threshold_s: 2.0
 
 loop_search:
-  radius_m: 10.0
-  minimum_time_separation_s: 30.0
-  minimum_id_separation: 50
-  maximum_candidates: 300
+  radius_m: 8.0
+  minimum_time_separation_s: 120.0
+  minimum_id_separation: 100
+  maximum_candidates: 200
 
 loop_registration:
   pose_tolerance_s: 0.02
   minimum_range_m: 1.0
   maximum_range_m: 50.0
-  voxel_size_m: 0.15
-  maximum_correspondence_distance_m: 1.0
+  voxel_size_m: 0.25
+  maximum_correspondence_distance_m: 1.5
   maximum_iterations: 50
 
 loop_closure:
@@ -44,20 +44,20 @@ loop_closure:
 optimization:
   odometry_translation_sigma_m: 0.10
   odometry_yaw_sigma_deg: 2.0
-  loop_translation_sigma_m: 0.20
+  loop_translation_sigma_m: 0.35
   loop_yaw_sigma_deg: 2.0
   maximum_evaluations: 300
   gradient_tolerance: 0.00001
 
 mapping:
   enabled: true
-  scan_stride: 1
+  scan_stride: 10
   voxel_size_m: 0.25
   minimum_range_m: 1.0
   maximum_range_m: 50.0
   pose_tolerance_s: 0.02
   leveling_enabled: true
-  leveling_reference_trajectory: outputs/test2_kiss/trajectory_local.csv
+  leveling_reference_trajectory: outputs/test1_kiss/trajectory_local.csv
 
 evaluation:
   enabled: true
@@ -82,10 +82,10 @@ visualization:
   z_max: null
 
 outputs:
-  output_dir: outputs/test2_slam_tuning_01
-  corrected_trajectory: outputs/test2_slam_tuning_01/_internal/trajectory_slam_local.csv
-  corrected_map: outputs/test2_slam_tuning_01/map_slam.pcd
-  run_summary: outputs/test2_slam_tuning_01/_internal/run_summary.json
-  metrics: outputs/test2_slam_tuning_01/RMSE_SLAM_metrics.json
-  plots_dir: outputs/test2_slam_tuning_01/plots
-  checkpoints_dir: outputs/test2_slam_tuning_01/_internal/checkpoints
+  output_dir: outputs/slam_kiss_icp
+  corrected_trajectory: outputs/slam_kiss_icp/_internal/trajectory_slam_local.csv
+  corrected_map: outputs/slam_kiss_icp/map_slam.pcd
+  run_summary: outputs/slam_kiss_icp/_internal/run_summary.json
+  metrics: outputs/slam_kiss_icp/RMSE_SLAM_metrics.json
+  plots_dir: outputs/slam_kiss_icp/plots
+  checkpoints_dir: outputs/slam_kiss_icp/_internal/checkpoints

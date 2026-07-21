@@ -1,50 +1,50 @@
 run:
-  name: test1_slam_tuning_01
-  backend: kiss_icp
-  save_checkpoints: true
+  name: slam_baseline_icp
+  backend: baseline_icp
+  save_checkpoints: false
 
 inputs:
-  trajectory_csv: outputs/test1_kiss/trajectory_local.csv
+  trajectory_csv: outputs/test1_baseline_icp/trajectory_local.csv
   lidar_bag: data/Test1_data/rosbag
   lidar_topic: /ouster/points
-  reference_map: outputs/test1_kiss/map.pcd
+  reference_map: outputs/test1_baseline_icp/map.pcd
 
 frames:
-  parent_frame: odom_lidar
-  child_frame: os_sensor
+  parent_frame: baseline_icp_map
+  child_frame: baseline_icp_sensor
 
 keyframes:
-  translation_threshold_m: 0.50
-  yaw_threshold_deg: 5.0
-  time_threshold_s: 1.0
+  translation_threshold_m: 1.0
+  yaw_threshold_deg: 10.0
+  time_threshold_s: 2.0
 
 loop_search:
-  radius_m: 10.0
-  minimum_time_separation_s: 30.0
-  minimum_id_separation: 50
-  maximum_candidates: 300
+  radius_m: 8.0
+  minimum_time_separation_s: 120.0
+  minimum_id_separation: 100
+  maximum_candidates: 200
 
 loop_registration:
   pose_tolerance_s: 0.02
   minimum_range_m: 1.0
   maximum_range_m: 50.0
-  voxel_size_m: 0.15
-  maximum_correspondence_distance_m: 1.0
+  voxel_size_m: 0.25
+  maximum_correspondence_distance_m: 1.5
   maximum_iterations: 50
 
 loop_closure:
   mode: auto
   manual_pairs: []
-  minimum_fitness: 0.30
-  maximum_inlier_rmse_m: 0.50
-  maximum_translation_correction_m: 5.0
+  minimum_fitness: 0.10
+  maximum_inlier_rmse_m: 1.0
+  maximum_translation_correction_m: 10.0
   maximum_yaw_correction_deg: 20.0
   maximum_accepted_loops: 1
 
 optimization:
   odometry_translation_sigma_m: 0.10
   odometry_yaw_sigma_deg: 2.0
-  loop_translation_sigma_m: 0.20
+  loop_translation_sigma_m: 0.35
   loop_yaw_sigma_deg: 2.0
   maximum_evaluations: 300
   gradient_tolerance: 0.00001
@@ -57,12 +57,12 @@ mapping:
   maximum_range_m: 50.0
   pose_tolerance_s: 0.02
   leveling_enabled: true
-  leveling_reference_trajectory: outputs/test1_kiss/trajectory_local.csv
+  leveling_reference_trajectory: outputs/test1_baseline_icp/trajectory_local.csv
 
 evaluation:
   enabled: true
   gnss_csv: data/xtrack_gnss_corrected/xtrack_gnss_corrected/xtrack_global_position_t12.csv
-  gnss_time_offset_s: 0
+  gnss_time_offset_s: -312.7144
   leveling_enabled: true
   scale_alignment: false
 
@@ -82,10 +82,10 @@ visualization:
   z_max: null
 
 outputs:
-  output_dir: outputs/test1_slam_tuning_01
-  corrected_trajectory: outputs/test1_slam_tuning_01/_internal/trajectory_slam_local.csv
-  corrected_map: outputs/test1_slam_tuning_01/map_slam.pcd
-  run_summary: outputs/test1_slam_tuning_01/_internal/run_summary.json
-  metrics: outputs/test1_slam_tuning_01/RMSE_SLAM_metrics.json
-  plots_dir: outputs/test1_slam_tuning_01/plots
-  checkpoints_dir: outputs/test1_slam_tuning_01/_internal/checkpoints
+  output_dir: outputs/slam_baseline_icp
+  corrected_trajectory: outputs/slam_baseline_icp/_internal/trajectory_slam_local.csv
+  corrected_map: outputs/slam_baseline_icp/map_slam.pcd
+  run_summary: outputs/slam_baseline_icp/_internal/run_summary.json
+  metrics: outputs/slam_baseline_icp/RMSE_SLAM_metrics.json
+  plots_dir: outputs/slam_baseline_icp/plots
+  checkpoints_dir: outputs/slam_baseline_icp/_internal/checkpoints

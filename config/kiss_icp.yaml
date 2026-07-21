@@ -9,11 +9,11 @@ backend:
 
 data:
   dataset_name: Test1_data
-  rosbag_dir: /home/juanj/sensy_project/data/Test1_data/rosbag
+  rosbag_dir: data/Test1_data/rosbag
   pointcloud_topic: /ouster/points
-  kiss_bag: /home/juanj/SenSyProject-kiss-icp/outputs/rosbags/test1_kiss_output_full
+  kiss_bag: data/kiss_outputs/Test1_Data_kiss_odometry_05_50
   kiss_topic: /kiss/odometry
-  gnss_csv: /home/juanj/sensy_project/data/xtrack_gnss_corrected/xtrack_gnss_corrected/xtrack_global_position_t12.csv
+  gnss_csv: data/xtrack_gnss_corrected/xtrack_gnss_corrected/xtrack_global_position_t12.csv
   gnss_time_offset_s: -312.7144
 
 evaluation:

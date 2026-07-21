@@ -416,11 +416,10 @@ def run_slam(
         visualization_enabled
         and bool(visualization.get("generate_map_plots", False))
         and map_summary is not None
-        and constraint_dicts
     ):
         from slam_icp.outputs import generate_map_plots
 
-        pair = constraint_dicts[0]
+        pair = constraint_dicts[0] if constraint_dicts else None
         plot_summary = generate_map_plots(
             kiss_map_path=_path(loaded, "inputs", "reference_map"),
             slam_map_path=map_path,
@@ -430,8 +429,8 @@ def run_slam(
             gnss_time_offset_s=float(data["evaluation"]["gnss_time_offset_s"]),
             keyframes_path=checkpoints_dir / "keyframes.csv",
             level_reference_trajectory_path=_path(loaded, "mapping", "leveling_reference_trajectory"),
-            source_id=int(pair["source_id"]),
-            target_id=int(pair["target_id"]),
+            source_id=(None if pair is None else int(pair["source_id"])),
+            target_id=(None if pair is None else int(pair["target_id"])),
             output_directory=plots_dir / "maps",
             loop_radius_m=float(visualization["loop_radius_m"]),
             plot_stride=int(visualization["plot_stride"]),

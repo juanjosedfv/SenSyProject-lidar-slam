@@ -15,7 +15,7 @@ data:
   pointcloud_topic: /ouster/points
   pointcloud_dir: data/Test1_data/rosbag/rosbag_data/laz_clouds
   pointcloud_glob: "*.laz"
-  max_scans: 120
+  max_scans: null
   scan_stride: 5
   start_index: 300
   gnss_csv: data/xtrack_gnss_corrected/xtrack_gnss_corrected/xtrack_global_position_t12.csv
@@ -33,8 +33,8 @@ odometry:
   use_gnss_seed: false
   icp_max_correspondence_distance_m: 1.0
   icp_max_iterations: 50
-  icp_tolerance_m: 0.0001
-  icp_degenerate_rmse_m: 0.000001
+  icp_tolerance_m: 0.00001
+  icp_degenerate_rmse_m: 0.0000001
   use_scan_to_map: true
   use_motion_model: true
   icp_max_correction_m: 2.0
