@@ -1,5 +1,7 @@
 # LiDAR Odometry and Offline SLAM
 
+[![Watch the KISS-ICP RViz demonstration](https://github.com/juanjosedfv/SenSyProject-lidar-slam/releases/download/demo-v1/Test1_Data_KISSICP.mp4)
+
 ## 1. Introduction
 
 This is the Sensor Systems LiDAR positioning project for the XTrack platform. The
