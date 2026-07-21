@@ -36,6 +36,7 @@ from slam_icp.keyframes import (
 from slam_icp.loop_closure import (
     find_loop_candidates,
     plot_loop_candidates,
+    select_loop_registrations,
     write_loop_candidates_csv,
 )
 from slam_icp.loop_closure import register_loop_pair
@@ -253,14 +254,16 @@ def run_slam(
         plot_paths.extend(map(str, (keyframe_plot, graph_plot, candidate_plot)))
 
     registration_cfg = data["loop_registration"]
-    constraints: list[LoopConstraint] = []
-    for pair in data["loop_closure"].get("accepted_pairs", []):
-        value = register_loop_pair(
+    loop_closure_cfg = data["loop_closure"]
+    loop_closure_mode = loop_closure_cfg["mode"]
+
+    def register_pair(source_id: int, target_id: int) -> dict:
+        return register_loop_pair(
             keyframes=keyframe_dicts,
             lidar_bag_path=_path(loaded, "inputs", "lidar_bag"),
             lidar_topic=data["inputs"]["lidar_topic"],
-            source_id=int(pair["source_id"]),
-            target_id=int(pair["target_id"]),
+            source_id=source_id,
+            target_id=target_id,
             maximum_time_difference_s=float(registration_cfg["pose_tolerance_s"]),
             minimum_range_m=float(registration_cfg["minimum_range_m"]),
             maximum_range_m=float(registration_cfg["maximum_range_m"]),
@@ -269,9 +272,41 @@ def run_slam(
             maximum_iterations=int(registration_cfg["maximum_iterations"]),
             output_directory=checkpoints_dir,
             plot_stride=int(visualization["plot_stride"]),
-            generate_plots=diagnostic_plots_enabled,
-            write_constraint=save_checkpoints,
+            generate_plots=diagnostic_plots_enabled and loop_closure_mode == "manual",
+            write_constraint=save_checkpoints and loop_closure_mode == "manual",
         )
+
+    selected_registrations, loop_decisions = select_loop_registrations(
+        mode=loop_closure_mode,
+        candidates=candidate_values,
+        manual_pairs=loop_closure_cfg.get("manual_pairs", []),
+        register_pair=register_pair,
+        minimum_fitness=float(loop_closure_cfg.get("minimum_fitness", 0.30)),
+        maximum_inlier_rmse_m=float(
+            loop_closure_cfg.get("maximum_inlier_rmse_m", 0.50)
+        ),
+        maximum_translation_correction_m=float(
+            loop_closure_cfg.get("maximum_translation_correction_m", 5.0)
+        ),
+        maximum_yaw_correction_deg=float(
+            loop_closure_cfg.get("maximum_yaw_correction_deg", 20.0)
+        ),
+        maximum_accepted_loops=int(
+            loop_closure_cfg.get("maximum_accepted_loops", 1)
+        ),
+    )
+    loop_decisions_path = write_json(internal_dir / "loop_decisions.json", loop_decisions)
+    if save_checkpoints and loop_closure_mode == "auto":
+        for value in selected_registrations:
+            constraint_path = write_json(
+                checkpoints_dir
+                / f"loop_constraint_{value['source_id']}_{value['target_id']}.json",
+                value,
+            )
+            value["constraint_path"] = str(constraint_path)
+
+    constraints: list[LoopConstraint] = []
+    for value in selected_registrations:
         constraint = LoopConstraint.from_dict(value)
         constraints.append(constraint)
         for key in ("before_plot", "after_plot"):
@@ -419,6 +454,7 @@ def run_slam(
         "keyframe_count": len(keyframes),
         "odometry_edge_count": len(edges),
         "candidate_count": len(candidates),
+        "loop_closure_mode": loop_closure_mode,
         "accepted_loop_count": len(constraints),
         "accepted_loop_ids": [
             {"source_id": item.source_id, "target_id": item.target_id}
@@ -434,6 +470,7 @@ def run_slam(
         "effective_configuration_path": str(effective_config_path),
         "backend_metadata_path": str(backend_metadata_path),
         "accepted_constraints_path": str(accepted_constraints_path),
+        "loop_decisions_path": str(loop_decisions_path),
         "checkpoints_saved": save_checkpoints,
     }
     write_json(summary_path, summary)

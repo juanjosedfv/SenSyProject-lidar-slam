@@ -5,6 +5,7 @@ import math
 import sqlite3
 import struct
 from pathlib import Path
+from typing import Callable
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -141,6 +142,44 @@ def load_nearest_pointcloud(
 
         topic_id = int(topic_row[0])
 
+        target_timestamp_ns = int(round(target_timestamp * 1e9))
+        indexed_window_ns = max(
+            int(math.ceil(maximum_time_difference_s * 1e9)) + 50_000_000,
+            1_000_000_000,
+        )
+        indexed_rows = connection.execute(
+            """
+            SELECT data
+            FROM messages
+            WHERE topic_id = ?
+              AND timestamp BETWEEN ? AND ?
+            ORDER BY ABS(timestamp - ?)
+            """,
+            (
+                topic_id,
+                target_timestamp_ns - indexed_window_ns,
+                target_timestamp_ns + indexed_window_ns,
+                target_timestamp_ns,
+            ),
+        )
+
+        for (raw_data,) in indexed_rows:
+            message = deserialize_message(
+                bytes(raw_data),
+                PointCloud2,
+            )
+            time_difference = abs(
+                message_timestamp_seconds(message) - target_timestamp
+            )
+            if time_difference < best_time_difference:
+                best_message = message
+                best_time_difference = time_difference
+
+        if best_message is not None and best_time_difference <= maximum_time_difference_s:
+            return best_message, best_time_difference
+
+        best_message = None
+        best_time_difference = math.inf
         rows = connection.execute(
             """
             SELECT data
@@ -1211,6 +1250,154 @@ def register_loop_pair(
         loop_constraint["after_plot"] = str(after_plot)
 
     return loop_constraint
+
+
+def _finite_metric(value: object) -> float | None:
+    try:
+        metric = float(value)
+    except (TypeError, ValueError):
+        return None
+    return metric if math.isfinite(metric) else None
+
+
+def _loop_decision_metrics(registration: dict) -> dict:
+    correction_dx = _finite_metric(registration.get("correction_dx"))
+    correction_dy = _finite_metric(registration.get("correction_dy"))
+    correction_translation = (
+        math.hypot(correction_dx, correction_dy)
+        if correction_dx is not None and correction_dy is not None
+        else None
+    )
+    return {
+        "source_id": int(registration["source_id"]),
+        "target_id": int(registration["target_id"]),
+        "fitness": _finite_metric(registration.get("fitness")),
+        "inlier_rmse_m": _finite_metric(registration.get("inlier_rmse_m")),
+        "correction_translation_m": correction_translation,
+        "correction_yaw_deg": _finite_metric(registration.get("correction_dyaw_deg")),
+    }
+
+
+def evaluate_loop_registration(
+    registration: dict,
+    *,
+    minimum_fitness: float,
+    maximum_inlier_rmse_m: float,
+    maximum_translation_correction_m: float,
+    maximum_yaw_correction_deg: float,
+) -> dict:
+    """Apply conservative, dataset-independent gates to one loop registration."""
+
+    decision = _loop_decision_metrics(registration)
+    reasons: list[str] = []
+    if bool(registration.get("degenerate", False)):
+        reasons.append("degenerate registration")
+    if decision["fitness"] is None:
+        reasons.append("fitness is not finite")
+    elif decision["fitness"] < minimum_fitness:
+        reasons.append("fitness below minimum")
+    if decision["inlier_rmse_m"] is None:
+        reasons.append("inlier RMSE is not finite")
+    elif decision["inlier_rmse_m"] > maximum_inlier_rmse_m:
+        reasons.append("inlier RMSE above maximum")
+    if decision["correction_translation_m"] is None:
+        reasons.append("translation correction is not finite")
+    elif decision["correction_translation_m"] > maximum_translation_correction_m:
+        reasons.append("translation correction above maximum")
+    if decision["correction_yaw_deg"] is None:
+        reasons.append("yaw correction is not finite")
+    elif abs(decision["correction_yaw_deg"]) > maximum_yaw_correction_deg:
+        reasons.append("yaw correction above maximum")
+    decision["accepted"] = not reasons
+    decision["rejection_reason"] = "; ".join(reasons) if reasons else None
+    return decision
+
+
+def select_loop_registrations(
+    *,
+    mode: str,
+    candidates: list[dict],
+    manual_pairs: list[dict],
+    register_pair: Callable[[int, int], dict],
+    minimum_fitness: float = 0.30,
+    maximum_inlier_rmse_m: float = 0.50,
+    maximum_translation_correction_m: float = 5.0,
+    maximum_yaw_correction_deg: float = 20.0,
+    maximum_accepted_loops: int = 1,
+) -> tuple[list[dict], list[dict]]:
+    """Register loops for the selected mode and return constraints and decisions."""
+
+    if mode == "disabled":
+        return [], []
+    if mode == "manual":
+        registrations: list[dict] = []
+        decisions: list[dict] = []
+        for pair in manual_pairs:
+            registration = register_pair(
+                int(pair["source_id"]),
+                int(pair["target_id"]),
+            )
+            decision = _loop_decision_metrics(registration)
+            decision["accepted"] = True
+            decision["rejection_reason"] = None
+            registrations.append(registration)
+            decisions.append(decision)
+        return registrations, decisions
+    if mode != "auto":
+        raise ValueError(f"Unsupported loop-closure mode: {mode}")
+
+    decisions = []
+    valid_registrations: list[tuple[int, dict, dict]] = []
+    for candidate in candidates:
+        source_id = int(candidate["source_id"])
+        target_id = int(candidate["target_id"])
+        try:
+            registration = register_pair(source_id, target_id)
+        except Exception as error:
+            decisions.append(
+                {
+                    "source_id": source_id,
+                    "target_id": target_id,
+                    "fitness": None,
+                    "inlier_rmse_m": None,
+                    "correction_translation_m": None,
+                    "correction_yaw_deg": None,
+                    "accepted": False,
+                    "rejection_reason": (
+                        f"registration failed: {type(error).__name__}: {error}"
+                    ),
+                }
+            )
+            continue
+
+        decision = evaluate_loop_registration(
+            registration,
+            minimum_fitness=minimum_fitness,
+            maximum_inlier_rmse_m=maximum_inlier_rmse_m,
+            maximum_translation_correction_m=maximum_translation_correction_m,
+            maximum_yaw_correction_deg=maximum_yaw_correction_deg,
+        )
+        decision_index = len(decisions)
+        decisions.append(decision)
+        if decision["accepted"]:
+            valid_registrations.append((decision_index, registration, decision))
+
+    valid_registrations.sort(
+        key=lambda item: (
+            -item[2]["fitness"],
+            item[2]["inlier_rmse_m"],
+            item[2]["correction_translation_m"],
+            abs(item[2]["correction_yaw_deg"]),
+            item[0],
+        )
+    )
+    selected = valid_registrations[:maximum_accepted_loops]
+    selected_indices = {item[0] for item in selected}
+    for decision_index, _, decision in valid_registrations:
+        if decision_index not in selected_indices:
+            decision["accepted"] = False
+            decision["rejection_reason"] = "valid registration not selected"
+    return [item[1] for item in selected], decisions
 
 
 def register_loop_candidate(

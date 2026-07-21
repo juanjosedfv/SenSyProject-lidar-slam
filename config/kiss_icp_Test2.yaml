@@ -1,0 +1,43 @@
+project:
+  name: kiss_icp
+  default_backend: kiss_icp
+
+backend:
+  name: kiss_icp
+  parent_frame: odom_lidar
+  child_frame: os_sensor
+
+data:
+  dataset_name: Test2_data
+  rosbag_dir: data/Test2_data/rosbag
+  pointcloud_topic: /ouster/points
+  kiss_bag: data/kiss_outputs/Test2_Data_kiss_odometry_05_50
+  kiss_topic: /kiss/odometry
+  gnss_csv: data/xtrack_gnss_corrected/xtrack_gnss_corrected/xtrack_global_position_t12.csv
+  gnss_time_offset_s: -312.7144
+
+evaluation:
+  leveling_enabled: true
+  scale_alignment: false
+  offset_scan_enabled: true
+  offset_scan_span_s: 120.0
+  offset_scan_step_s: 10.0
+
+mapping:
+  min_range_m: 1.0
+  max_range_m: 50.0
+  scan_stride: 1
+  pose_tolerance_s: 0.02
+  voxel_size_m: 0.25
+  leveling_enabled: true
+  remove_ground: false
+  ground_z_threshold_m: -1.5
+
+output:
+  output_dir: outputs/test2_kiss
+  trajectory_local_csv: outputs/test2_kiss/trajectory_local.csv
+  trajectory_csv: outputs/test2_kiss/trajectory_estimate.csv
+  velocity_csv: outputs/test2_kiss/velocity_ned.csv
+  map_pcd: outputs/test2_kiss/map.pcd
+  metrics_json: outputs/test2_kiss/metrics.json
+  plot_dir: outputs/test2_kiss/plots
