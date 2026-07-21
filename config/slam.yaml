@@ -33,9 +33,13 @@ loop_registration:
   maximum_iterations: 50
 
 loop_closure:
-  accepted_pairs:
-    - source_id: 143
-      target_id: 596
+  mode: auto
+  manual_pairs: []
+  minimum_fitness: 0.30
+  maximum_inlier_rmse_m: 0.50
+  maximum_translation_correction_m: 5.0
+  maximum_yaw_correction_deg: 20.0
+  maximum_accepted_loops: 1
 
 optimization:
   odometry_translation_sigma_m: 0.10

@@ -5,6 +5,9 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from slam_icp.config import SUPPORTED_BACKENDS, load_slam_config
 from slam_icp.pipeline import run_slam
